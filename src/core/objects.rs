@@ -17,7 +17,7 @@ pub trait Object {
 #[derive(Debug, Clone)]
 pub struct Metadata {
     pub data: HashMap<String, String>,
-    pub vector: Option<std::rc::Weak<RefCell<Vector>>>,
+    vector_hash_id: Option<u64>,
     hash_id: u64,
 }
 
@@ -25,7 +25,7 @@ pub struct Metadata {
 pub struct Vector {
     pub data: Vec<u32>,
     pub timestamp: i64,
-    pub meta: Option<std::rc::Weak<RefCell<Metadata>>>,
+    meta_hash_id: Option<u64>,
     hash_id: u64,
 }
 
@@ -46,19 +46,14 @@ impl Object for Metadata {
 
         self.data = decoded.data;
         self.hash_id = decoded.hash_id;
+        self.vector_hash_id = Some(decoded.vector_hash_id);
 
         decoded.vector_hash_id
     }
 
     fn dump(&self) -> Result<(Vec<u8>, u64), ()> {
-        let vector_hash_id = match &self.vector {
-            Some(vector_weak) => {
-                if let Some(vector_rc) = vector_weak.upgrade() {
-                    vector_rc.borrow().hash_id
-                } else {
-                    0
-                }
-            },
+        let vector_hash_id = match self.vector_hash_id {
+            Some(vector_hash) => vector_hash,
             None => 0,
         };
         let storage_data = StorageMetadata { 
@@ -92,29 +87,36 @@ impl Metadata {
 
     pub fn new(new_data: HashMap<String, String>) -> Metadata {
         let hash_id = Metadata::calculate_hash(new_data.clone());
-        Metadata { data: new_data , hash_id: hash_id, vector : None }
+        Metadata { data: new_data , vector_hash_id: None, hash_id: hash_id}
     }
 
-    pub fn add_vector(&mut self, parent_vector: std::rc::Rc<RefCell<Vector>>) {
-        self.vector = Some(std::rc::Rc::downgrade(&parent_vector));
-    }
-
-    pub fn get_vector(&self) -> Option<Vector> {
-        match &self.vector {
-            Some(vector_weak) => vector_weak.upgrade().map(|rc| (*rc.borrow()).clone()),
-            None => None,
-        }
+    pub fn add_vector(&mut self, parent_vector: Vector) {
+        self.vector_hash_id = Some(parent_vector.hash_id);
     }
 }
 
 impl fmt::Display for Metadata {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Metadata: {}, hash: {:?}",
-            format!("{:?}", self.data),
-            self.hash_id
-        )
+        match self.vector_hash_id {
+            Some(vector_hash) => {
+                write!(
+                    f,
+                    "Metadata: {}, hash: {:?}, vector_hash_id: {}",
+                    format!("{:?}", self.data),
+                    self.hash_id,
+                    vector_hash
+                )
+            },
+            None => {
+                write!(
+                    f,
+                    "Metadata: {}, hash: {:?}, vector_hash_id: None",
+                    format!("{:?}", self.data),
+                    self.hash_id
+                )
+            }
+        }
+        
     }
 }
 
@@ -128,19 +130,14 @@ impl Object for Vector {
         self.data = decoded.data;
         self.hash_id = decoded.hash_id;
         self.timestamp = decoded.timestamp;
+        self.meta_hash_id = Some(decoded.meta_hash_id);
 
         decoded.meta_hash_id
     }
 
     fn dump(&self) -> Result<(Vec<u8>, u64), ()> {
-        let meta_hash_id = match &self.meta {
-            Some(meta_weak) => {
-                if let Some(meta_rc) = meta_weak.upgrade() {
-                    meta_rc.borrow().hash_id
-                } else {
-                    0
-                }
-            },
+        let meta_hash_id = match self.meta_hash_id {
+            Some(meta_hash) => meta_hash,
             None => 0,
         };
         let storage_data = StorageVector { 
@@ -169,43 +166,26 @@ impl Object for Vector {
 impl Vector {
     pub fn new(data: Vec<u32>, timestamp: i64) -> Vector {
         // TODO calculate_hash
-        Vector { data: data, timestamp: timestamp, meta: None, hash_id: 0}
+        Vector { data: data, timestamp: timestamp, meta_hash_id: None, hash_id: 0}
     }
 
-    pub fn add_metadata(&mut self, child_meta: std::rc::Rc<RefCell<Metadata>>) {
-        self.meta = Some(std::rc::Rc::downgrade(&child_meta));
-    }
-
-    pub fn get_meta(&self) -> Option<Metadata> {
-        match &self.meta {
-            Some(meta_weak) => meta_weak.upgrade().map(|rc| (*rc.borrow()).clone()),
-            None => None,
-        }
+    pub fn add_metadata(&mut self, child_meta: Metadata) {
+        self.meta_hash_id = Some(child_meta.hash_id);
     }
 }
 
 impl fmt::Display for Vector {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match &self.meta {
-            Some(meta_weak) => {
-                if let Some(meta_rc) = meta_weak.upgrade() {
+        match self.meta_hash_id {
+            Some(meta_hash) => {
                     write!(
                         f,
-                        "Vector: {:?}, timestamp: {}, hash: {:?}, meta: {}",
+                        "Vector: {:?}, timestamp: {}, hash: {}, meta: {}",
                         self.data,
                         self.timestamp,
                         self.hash_id,
-                        meta_rc.borrow()
+                        meta_hash
                     )
-                } else {
-                    write!(
-                        f,
-                        "Vector: {:?}, timestamp: {}, hash: {:?}, meta: None (слабая ссылка недействительна)",
-                        self.data,
-                        self.timestamp,
-                        self.hash_id
-                    )
-                }
             }
             None => {
                 write!(
