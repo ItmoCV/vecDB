@@ -1,5 +1,5 @@
 use std::{collections::HashMap, result::Result};
-use crate::core::{config::ConfigLoader, objects::{Collection, Object, User}, utils::UserPrevelegionLevel};
+use crate::core::{config::ConfigLoader, objects::{Collection, Object}};
 
 // structs define
 
@@ -9,7 +9,6 @@ pub struct StorageController {
 
 pub struct ConnectionController {
     storage_controller: StorageController,
-    users: Option<Vec<User>>,
     configs: HashMap<String, String>,
 }
 
@@ -42,7 +41,7 @@ impl ConnectionController {
     pub fn new(storage_controller : StorageController, config_loader : ConfigLoader) -> ConnectionController {
         let names = Vec::new();
 
-        ConnectionController { storage_controller: storage_controller, users: None, configs: config_loader.get(names) }
+        ConnectionController { storage_controller: storage_controller, configs: config_loader.get(names) }
     }
 
     pub fn connection_handler(&mut self) {
@@ -52,19 +51,6 @@ impl ConnectionController {
     pub fn query_handler(&self) -> Result<(), &'static str> {
         Ok(())
     }
-
-    pub fn add_user(&mut self, new_user: User) -> Result<(), &'static str> {
-        Ok(())
-    }
-
-    pub fn update_user(&mut self, user: User, new_level: UserPrevelegionLevel) -> Result<(), &'static str> {
-        Ok(())
-    }
-
-    pub fn delete_user(&mut self, user: User) -> Result<(), &'static str> {
-        Ok(())
-    }
-
 }
 
 //  CollectionController impl
