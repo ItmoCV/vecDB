@@ -4,12 +4,6 @@ use crate::core::objects::Vector;
 
 // util types
 
-pub enum UserPrevelegionLevel {
-    GUEST,
-    MAINTAINER,
-    ADMIN
-}
-
 pub struct VectorResponse {
     vectors: Vec<Vector>,
     score: Vec<i8>,

@@ -1,5 +1,5 @@
 use std::{collections::HashMap};
-use crate::core::utils::{calculate_hash, UserPrevelegionLevel};
+use crate::core::utils::{calculate_hash};
 use std::fmt;
 
 // structs define
@@ -26,11 +26,6 @@ pub struct Vector {
 
 pub struct Collection {
     pub name: String,
-    hash_id: u64,
-}
-
-pub struct User {
-    level : UserPrevelegionLevel,
     hash_id: u64,
 }
 
@@ -111,26 +106,6 @@ impl Object for Collection {
 
     fn dump(&self) {
         // Реализация сохранения для Vector
-    }
-
-    fn hash_id(&self) -> u64 {
-        self.hash_id
-    }
-
-    fn set_hash_id(&mut self, id: u64) {
-        self.hash_id = id;
-    }
-}
-
-//  User impl
-
-impl Object for User {
-    fn load(&mut self) {
-        // Реализация загрузки для User
-    }
-
-    fn dump(&self) {
-        // Реализация сохранения для User
     }
 
     fn hash_id(&self) -> u64 {
