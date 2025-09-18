@@ -1,12 +1,29 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
-
-use crate::core::objects::Vector;
+use std::collections::HashMap;
+use crate::core::objects::{Object, Vector};
+use serde::{Serialize, Deserialize};
+use std::rc::{Rc};
 
 // util types
 
 pub struct VectorResponse {
     vectors: Vec<Vector>,
     score: Vec<i8>,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+pub struct StorageVector {
+    pub data: Vec<u32>,
+    pub timestamp: i64,
+    pub meta_hash_id: u64,
+    pub hash_id: u64,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+pub struct StorageMetadata {
+    pub data: HashMap<String, String>,
+    pub vector_hash_id: u64,
+    pub hash_id: u64,
 }
 
 // utils func
