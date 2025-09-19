@@ -228,3 +228,10 @@ impl Object for Collection {
         self.hash_id = id;
     }
 }
+
+impl Collection {
+    pub fn new(name: String) -> Collection {
+        // TODO calculate_hash
+        Collection { name: name, hash_id: 0 }
+    }
+}
