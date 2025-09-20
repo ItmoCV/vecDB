@@ -1,6 +1,5 @@
 use std::{collections::HashMap};
 use crate::core::{controllers::{MetadataController}, interfaces::Object, utils::{calculate_hash, StorageCollection, StorageMetadata, StorageVector}};
-use serde::{Serialize, Deserialize};
 use std::fmt;
 use crate::core::controllers::VectorController;
 
