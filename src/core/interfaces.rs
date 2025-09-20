@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-pub trait ObjectController {
+pub trait CollectionObjectController {
     fn load(&mut self, raw_data: HashMap<u64, Vec<u8>>);
     fn dump(&self) -> HashMap<u64, Vec<u8>>;
 }
