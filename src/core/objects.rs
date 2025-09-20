@@ -1,18 +1,10 @@
 use std::{collections::HashMap};
-use crate::core::utils::{calculate_hash, StorageMetadata, StorageVector};
+use crate::core::{controllers::{MetadataController}, interfaces::Object, utils::{calculate_hash, StorageCollection, StorageMetadata, StorageVector}};
 use serde::{Serialize, Deserialize};
 use std::fmt;
-use std::cell::RefCell;
+use crate::core::controllers::VectorController;
 
 // structs define
-
-#[allow(dead_code)]
-pub trait Object {
-    fn load(&mut self, raw_data: Vec<u8>) -> u64;
-    fn dump(&self) -> Result<(Vec<u8>, u64), ()>;
-    fn hash_id(&self) -> u64;
-    fn set_hash_id(&mut self, id: u64);
-}
 
 #[derive(Debug, Clone)]
 pub struct Metadata {
@@ -29,9 +21,11 @@ pub struct Vector {
     hash_id: u64,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Debug)]
 pub struct Collection {
     pub name: String,
+    pub vectors_controller: VectorController,
+    pub metadata_controller: MetadataController,
     hash_id: u64,
 }
 
@@ -40,15 +34,13 @@ pub struct Collection {
 //  Metadata impl
 
 impl Object for Metadata {
-    fn load(&mut self, raw_data: Vec<u8>) -> u64{
+    fn load(&mut self, raw_data: Vec<u8>) {
         let decoded: StorageMetadata = bincode::deserialize(&raw_data[..])
             .expect("Ошибка");
 
         self.data = decoded.data;
         self.hash_id = decoded.hash_id;
         self.vector_hash_id = Some(decoded.vector_hash_id);
-
-        decoded.vector_hash_id
     }
 
     fn dump(&self) -> Result<(Vec<u8>, u64), ()> {
@@ -85,9 +77,16 @@ impl Metadata {
         calculate_hash(&sorted_data)
     }
 
-    pub fn new(new_data: HashMap<String, String>) -> Metadata {
-        let hash_id = Metadata::calculate_hash(new_data.clone());
-        Metadata { data: new_data , vector_hash_id: None, hash_id: hash_id}
+    pub fn new(new_data: Option<HashMap<String, String>>) -> Metadata {
+        match new_data {
+            Some(data) => {
+                let hash_id = Metadata::calculate_hash(data.clone());
+                Metadata { data: data , vector_hash_id: None, hash_id: hash_id}
+            }
+            None => {
+                Metadata { data: HashMap::new(), vector_hash_id: None, hash_id: 0}
+            }
+        }
     }
 
     pub fn add_vector(&mut self, parent_vector: Vector) {
@@ -123,7 +122,7 @@ impl fmt::Display for Metadata {
 //  Vector impl
 
 impl Object for Vector {
-    fn load(&mut self, raw_data: Vec<u8>) -> u64{
+    fn load(&mut self, raw_data: Vec<u8>) {
         let decoded: StorageVector = bincode::deserialize(&raw_data[..])
             .expect("Ошибка");
 
@@ -131,8 +130,6 @@ impl Object for Vector {
         self.hash_id = decoded.hash_id;
         self.timestamp = decoded.timestamp;
         self.meta_hash_id = Some(decoded.meta_hash_id);
-
-        decoded.meta_hash_id
     }
 
     fn dump(&self) -> Result<(Vec<u8>, u64), ()> {
@@ -164,9 +161,14 @@ impl Object for Vector {
 }
 
 impl Vector {
-    pub fn new(data: Vec<u32>, timestamp: i64) -> Vector {
+    pub fn new(data: Option<Vec<u32>>, timestamp: Option<i64>) -> Vector {
         // TODO calculate_hash
-        Vector { data: data, timestamp: timestamp, meta_hash_id: None, hash_id: 0}
+        Vector { 
+            data: data.unwrap_or_default(), 
+            timestamp: timestamp.unwrap_or(0), 
+            meta_hash_id: None, 
+            hash_id: 0
+        }
     }
 
     pub fn add_metadata(&mut self, child_meta: Metadata) {
@@ -203,18 +205,24 @@ impl fmt::Display for Vector {
 //  Collection impl
 
 impl Object for Collection {
-    fn load(&mut self, raw_data: Vec<u8>) -> u64 {
-        let decoded: Collection = bincode::deserialize(&raw_data[..])
-            .expect("Ошибка");
+    fn load(&mut self, raw_data: Vec<u8>) {
+        // Десериализуем не саму Collection, а StorageCollection
+        let decoded: StorageCollection = bincode::deserialize(&raw_data[..])
+            .expect("Ошибка десериализации StorageCollection");
 
         self.name = decoded.name;
         self.hash_id = decoded.hash_id;
-
-        0
     }
 
     fn dump(&self) -> Result<(Vec<u8>, u64), ()> {
-        let encoded = bincode::serialize(&self)
+        let storage_data = StorageCollection{ 
+            name: self.name.clone(),
+            hash_id: self.hash_id,
+            vector_length: self.vectors_controller.get_length(),
+            metrics: self.vectors_controller.get_metrics().to_string(),
+        };
+
+        let encoded = bincode::serialize(&storage_data)
             .expect("Ошибка сериализации Collection");
         
         Ok((encoded, self.hash_id))
@@ -230,8 +238,11 @@ impl Object for Collection {
 }
 
 impl Collection {
-    pub fn new(name: String) -> Collection {
-        // TODO calculate_hash
-        Collection { name: name, hash_id: 0 }
+    pub fn new(name: Option<String>) -> Collection {
+        // TODO: вычислить hash_id на основе имени коллекции
+        let name = name.unwrap_or_else(|| "".to_string());
+        let vector_controller = VectorController::new();
+        let metadata_controller = MetadataController::new();
+        Collection { name, hash_id: 0, vectors_controller: vector_controller, metadata_controller }
     }
 }
