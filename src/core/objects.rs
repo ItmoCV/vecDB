@@ -238,10 +238,15 @@ impl Object for Collection {
 
 impl Collection {
     pub fn new(name: Option<String>) -> Collection {
-        // TODO: вычислить hash_id на основе имени коллекции
-        let name = name.unwrap_or_else(|| "".to_string());
+        let (name, hash_id) = match name {
+            Some(n) => {
+                let hash = calculate_hash(&n);
+                (n, hash)
+            },
+            None => ("".to_string(), 0),
+        };
         let vector_controller = VectorController::new();
         let metadata_controller = MetadataController::new();
-        Collection { name, hash_id: 0, vectors_controller: vector_controller, metadata_controller }
+        Collection { name, hash_id, vectors_controller: vector_controller, metadata_controller }
     }
 }
