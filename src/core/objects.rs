@@ -33,6 +33,7 @@ pub struct Collection {
 //  Metadata impl
 
 impl Object for Metadata {
+    /// Загружает объект Metadata из вектора байт (десериализация)
     fn load(&mut self, raw_data: Vec<u8>) {
         let decoded: StorageMetadata = bincode::deserialize(&raw_data[..])
             .expect("Ошибка");
@@ -42,6 +43,7 @@ impl Object for Metadata {
         self.vector_hash_id = Some(decoded.vector_hash_id);
     }
 
+    /// Сохраняет объект Metadata в вектор байт (сериализация)
     fn dump(&self) -> Result<(Vec<u8>, u64), ()> {
         let vector_hash_id = match self.vector_hash_id {
             Some(vector_hash) => vector_hash,
@@ -59,16 +61,19 @@ impl Object for Metadata {
         Ok((encoded, self.hash_id))
     }
 
+    /// Возвращает hash_id объекта Metadata
     fn hash_id(&self) -> u64 {
         self.hash_id
     }
 
+    /// Устанавливает hash_id объекта Metadata
     fn set_hash_id(&mut self, id: u64) {
         self.hash_id = id;
     }
 }
 
 impl Metadata {
+    /// Вычисляет хеш на основе данных метадаты
     pub fn calculate_hash(data: HashMap<String, String>) -> u64 {
         let mut sorted_data: Vec<(&String, &String)> = data.iter().collect();
         sorted_data.sort_by(|a, b| a.0.cmp(b.0));
@@ -76,6 +81,7 @@ impl Metadata {
         calculate_hash(&sorted_data)
     }
 
+    /// Создаёт новый объект Metadata, опционально с начальными данными
     pub fn new(new_data: Option<HashMap<String, String>>) -> Metadata {
         match new_data {
             Some(data) => {
@@ -88,12 +94,14 @@ impl Metadata {
         }
     }
 
+    /// Привязывает метадату к вектору по его hash_id
     pub fn add_vector(&mut self, parent_vector: Vector) {
         self.vector_hash_id = Some(parent_vector.hash_id);
     }
 }
 
 impl fmt::Display for Metadata {
+    /// Форматирует объект Metadata для вывода
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.vector_hash_id {
             Some(vector_hash) => {
@@ -121,6 +129,7 @@ impl fmt::Display for Metadata {
 //  Vector impl
 
 impl Object for Vector {
+    /// Загружает объект Vector из вектора байт (десериализация)
     fn load(&mut self, raw_data: Vec<u8>) {
         let decoded: StorageVector = bincode::deserialize(&raw_data[..])
             .expect("Ошибка");
@@ -131,6 +140,7 @@ impl Object for Vector {
         self.meta_hash_id = Some(decoded.meta_hash_id);
     }
 
+    /// Сохраняет объект Vector в вектор байт (сериализация)
     fn dump(&self) -> Result<(Vec<u8>, u64), ()> {
         let meta_hash_id = match self.meta_hash_id {
             Some(meta_hash) => meta_hash,
@@ -149,17 +159,19 @@ impl Object for Vector {
         Ok((encoded, self.hash_id))
     }
 
+    /// Возвращает hash_id объекта Vector
     fn hash_id(&self) -> u64 {
         self.hash_id
     }
 
-
+    /// Устанавливает hash_id объекта Vector
     fn set_hash_id(&mut self, id: u64) {
         self.hash_id = id;
     }
 }
 
 impl Vector {
+    /// Создаёт новый объект Vector с опциональными данными и временной меткой
     pub fn new(data: Option<Vec<u32>>, timestamp: Option<i64>) -> Vector {
         // TODO calculate_hash
         Vector { 
@@ -170,12 +182,14 @@ impl Vector {
         }
     }
 
+    /// Привязывает вектор к метаданным по их hash_id
     pub fn add_metadata(&mut self, child_meta: Metadata) {
         self.meta_hash_id = Some(child_meta.hash_id);
     }
 }
 
 impl fmt::Display for Vector {
+    /// Форматирует объект Vector для вывода
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.meta_hash_id {
             Some(meta_hash) => {
@@ -204,6 +218,7 @@ impl fmt::Display for Vector {
 //  Collection impl
 
 impl Object for Collection {
+    /// Загружает объект Collection из вектора байт (десериализация StorageCollection)
     fn load(&mut self, raw_data: Vec<u8>) {
         // Десериализуем не саму Collection, а StorageCollection
         let decoded: StorageCollection = bincode::deserialize(&raw_data[..])
@@ -213,6 +228,7 @@ impl Object for Collection {
         self.hash_id = decoded.hash_id;
     }
 
+    /// Сохраняет объект Collection в вектор байт (сериализация StorageCollection)
     fn dump(&self) -> Result<(Vec<u8>, u64), ()> {
         let storage_data = StorageCollection{ 
             name: self.name.clone(),
@@ -227,16 +243,19 @@ impl Object for Collection {
         Ok((encoded, self.hash_id))
     }
 
+    /// Возвращает hash_id объекта Collection
     fn hash_id(&self) -> u64 {
         self.hash_id
     }
 
+    /// Устанавливает hash_id объекта Collection
     fn set_hash_id(&mut self, id: u64) {
         self.hash_id = id;
     }
 }
 
 impl Collection {
+    /// Создаёт новый объект Collection с опциональным именем
     pub fn new(name: Option<String>) -> Collection {
         let (name, hash_id) = match name {
             Some(n) => {
