@@ -1,5 +1,5 @@
 use std::{collections::HashMap, result::Result};
-use crate::core::{config::ConfigLoader, objects::{Collection, Object}};
+use crate::core::{config::ConfigLoader, objects::{Collection, Vector, Metadata}, interfaces::{ObjectController, Object}};
 use std::fs;
 use std::path::Path;
 use std::io::ErrorKind;
@@ -20,41 +20,68 @@ pub struct CollectionController {
     collections: Option<Vec<Collection>>,
 }
 
+#[derive(Debug)]
+pub struct VectorController {
+    vectors: Option<Vec<Vector>>,
+    metrics: Option<String>,
+    vectror_length: Option<u8>,
+}
+
+#[derive(Debug)]
+pub struct  MetadataController {
+    metas: Option<Vec<Metadata>>,
+}
+
 // Impl block
 
 //  StorageController impl
 
 impl StorageController {
     /// Создаёт новый контроллер хранилища, инициализирует папку storage, если её нет
-    pub fn new(configs : HashMap<String, String>) -> StorageController {
+    pub fn new(configs: HashMap<String, String>) -> StorageController {
         fs::create_dir_all("storage")
-            .expect("Storage folder not create");
+            .expect("Не удалось создать папку storage");
+        StorageController { configs }
+    }
 
-        StorageController { configs: configs }
+    /// Универсальный метод для сохранения данных в файл
+    fn save_to_file<P: AsRef<Path>>(&self, dir_path: P, file_name: u64, raw_data: Vec<u8>) -> Result<(), std::io::Error> {
+        fs::create_dir_all(&dir_path)?;
+        let file_path = dir_path.as_ref().join(format!("{}.bin", file_name));
+        fs::write(file_path, raw_data)
+    }
+
+    /// Сохраняет сырые данные коллекции по hash_id
+    pub fn save_collection(&self, collection_name: String, raw_data: Vec<u8>, hash_id: u64) -> Result<(), std::io::Error> {
+        self.save_to_file(format!("./storage/{}", collection_name), hash_id, raw_data)
+    }
+
+    /// Сохраняет сырые данные вектора по hash_id
+    pub fn save_vector(&self, collection_name: String, raw_data: Vec<u8>, hash_id: u64) -> Result<(), std::io::Error> {
+        self.save_to_file(format!("./storage/{}/vectors", collection_name), hash_id, raw_data)
+    }
+
+    /// Сохраняет сырые данные метадаты по hash_id
+    pub fn save_metadata(&self, collection_name: String, raw_data: Vec<u8>, hash_id: u64) -> Result<(), std::io::Error> {
+        self.save_to_file(format!("./storage/{}/metadata", collection_name), hash_id, raw_data)
     }
 
     /// Возвращает список имён всех коллекций (папок) в storage
-    pub fn get_all_collection(&self) -> Vec<String> {
+    pub fn get_all_collections_name(&self) -> Vec<String> {
         let path = Path::new("./storage");
-        let mut collection_names: Vec<String> = Vec::new();
-
-        for entry in fs::read_dir(path).unwrap() {
-            let entry = entry.unwrap();
-            let entry_path = entry.path();
-            if entry.metadata().unwrap().is_dir() {
-                let collection_path = entry_path.to_str();
-                match collection_path {
-                    Some(path) => {
-                        if let Some(last) = path.to_string().split('/').last() {
-                            collection_names.push(last.to_string());
-                        }
+        match fs::read_dir(path) {
+            Ok(entries) => entries.filter_map(|entry| {
+                entry.ok().and_then(|e| {
+                    let path = e.path();
+                    if path.is_dir() {
+                        path.file_name().and_then(|n| n.to_str().map(|s| s.to_string()))
+                    } else {
+                        None
                     }
-                    None => {}
-                }
-            }
+                })
+            }).collect(),
+            Err(_) => Vec::new(),
         }
-
-        collection_names
     }
 
     /// Читает сырые данные коллекции (первый найденный файл в папке коллекции)
@@ -62,28 +89,21 @@ impl StorageController {
         let col_path = format!("./storage/{}", collection_name);
         let path = Path::new(&col_path);
 
-        let read_dir = fs::read_dir(path);
-        let mut col_raw_data: Vec<u8> = Vec::new();
-        match read_dir {
+        match fs::read_dir(path) {
             Ok(entries) => {
-                for entry in entries {
-                    let entry = entry.unwrap();
+                for entry in entries.flatten() {
                     let entry_path = entry.path();
-                    if entry.metadata().unwrap().is_file() {
-                        let col_raw_path = entry_path.to_str();
-                        match col_raw_path {
-                            Some(col_file) => {
-                                col_raw_data = fs::read(col_file).unwrap();
-                            }
-                            None => {}
+                    if entry_path.is_file() {
+                        if let Ok(data) = fs::read(&entry_path) {
+                            return Some(data);
                         }
                     }
                 }
-                Some(col_raw_data)
+                None
             }
             Err(e) => {
                 if e.kind() == ErrorKind::NotFound {
-                    return None;
+                    None
                 } else {
                     panic!("Ошибка чтения директории: {:?}", e);
                 }
@@ -91,91 +111,73 @@ impl StorageController {
         }
     }
 
-    /// Читает все векторы (файлы) из папки vectors коллекции и возвращает их содержимое
-    pub fn read_all_vector(&self, collection_name: String) -> Vec<Vec<u8>> {
+    /// Читает все векторы (файлы) из папки vectors коллекции и возвращает их содержимое в виде HashMap, где ключ — hash (u64), значение — Vec<u8>
+    pub fn read_all_vector(&self, collection_name: String) -> HashMap<u64, Vec<u8>> {
         let vector_path = format!("./storage/{}/vectors", collection_name);
         let path = Path::new(&vector_path);
+        let mut result = HashMap::new();
 
-        let mut raw_data_list: Vec<Vec<u8>> = Vec::new();
-
-        let read_dir = fs::read_dir(path);
-        match read_dir {
+        match fs::read_dir(path) {
             Ok(entries) => {
-                for entry in entries {
-                    let entry = entry.unwrap();
+                for entry in entries.flatten() {
                     let entry_path = entry.path();
-                    if entry.metadata().unwrap().is_file() {
-                        let vector_path = entry_path.to_str();
-                        match vector_path {
-                            Some(vector) => {
-                                let raw_vec = fs::read(vector).unwrap();
-                                raw_data_list.push(raw_vec);
-                            }
-                            None => {}
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                if e.kind() == ErrorKind::NotFound {
-                    // Если папка не найдена, возвращаем пустой список
-                    return Vec::new();
-                } else {
-                    panic!("Ошибка чтения директории: {:?}", e);
-                }
-            }
-        }
-
-        raw_data_list
-    }
-
-    /// Возвращает вектор имён файлов векторов по названию коллекции (без расширения .bin)
-    pub fn get_all_vectors(&self, collection_name: String) -> Vec<String> {
-        let vector_path = format!("./storage/{}/vectors", collection_name);
-        let path = Path::new(&vector_path);
-
-        let mut vector_file_names: Vec<String> = Vec::new();
-
-        let read_dir = fs::read_dir(path);
-        match read_dir {
-            Ok(entries) => {
-                for entry in entries {
-                    let entry = entry.unwrap();
-                    let entry_path = entry.path();
-                    if entry.metadata().unwrap().is_file() {
-                        if let Some(file_name) = entry_path.file_name() {
-                            if let Some(file_name_str) = file_name.to_str() {
-                                // Удаляем приписку ".bin" если она есть
-                                if let Some(stripped) = file_name_str.strip_suffix(".bin") {
-                                    vector_file_names.push(stripped.to_string());
-                                } else {
-                                    vector_file_names.push(file_name_str.to_string());
+                    if entry_path.is_file() {
+                        if let Some(file_name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                            // Извлекаем hash из имени файла (например, "123456.bin" -> 123456)
+                            let hash_str = file_name.strip_suffix(".bin").unwrap_or(file_name);
+                            if let Ok(hash) = hash_str.parse::<u64>() {
+                                if let Ok(data) = fs::read(&entry_path) {
+                                    result.insert(hash, data);
                                 }
                             }
                         }
                     }
                 }
+                result
             }
             Err(e) => {
                 if e.kind() == ErrorKind::NotFound {
-                    // Если папка не найдена, возвращаем пустой список
-                    return Vec::new();
+                    result
                 } else {
                     panic!("Ошибка чтения директории: {:?}", e);
                 }
             }
         }
+    }
 
-        vector_file_names
+    /// Возвращает вектор хэшей (u64) файлов векторов по названию коллекции (имя файла соответствует хэшу)
+    pub fn get_all_vectors_names(&self, collection_name: String) -> Vec<u64> {
+        let vector_path = format!("./storage/{}/vectors", collection_name);
+        let path = Path::new(&vector_path);
+
+        match fs::read_dir(path) {
+            Ok(entries) => entries.filter_map(|entry| {
+                entry.ok().and_then(|e| {
+                    let entry_path = e.path();
+                    if entry_path.is_file() {
+                        entry_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .and_then(|s| s.strip_suffix(".bin").or(Some(s)))
+                            .and_then(|s| s.parse::<u64>().ok())
+                    } else {
+                        None
+                    }
+                })
+            }).collect(),
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    Vec::new()
+                } else {
+                    panic!("Ошибка чтения директории: {:?}", e);
+                }
+            }
+        }
     }
 
     /// Читает конкретный вектор по имени коллекции и имени (или хэшу) вектора
-    pub fn read_vector(&self, collection_name: String, vector_name: String) -> Option<Vec<u8>> {
-        // Формируем путь к файлу вектора
-        let vector_path_bin = format!("./storage/{}/vectors/{}.bin", collection_name, vector_name);
-        let vector_path = Path::new(&vector_path_bin);
-
-        match fs::read(vector_path) {
+    pub fn read_vector(&self, collection_name: String, vector_hash: u64) -> Option<Vec<u8>> {
+        let vector_path_bin = format!("./storage/{}/vectors/{}.bin", collection_name, vector_hash);
+        match fs::read(&vector_path_bin) {
             Ok(data) => Some(data),
             Err(e) => {
                 if e.kind() == ErrorKind::NotFound {
@@ -187,90 +189,73 @@ impl StorageController {
         }
     }
 
-    /// Читает все файлы метадаты из папки metadata внутри коллекции и возвращает их содержимое в виде Vec<Vec<u8>>
-    pub fn read_all_metadata(&self, collection_name: String) -> Vec<Vec<u8>> {
+    /// Читает все файлы метадаты из папки metadata внутри коллекции и возвращает их содержимое в виде HashMap<u64, Vec<u8>>, где ключ - hash (имя файла без расширения)
+    pub fn read_all_metadata(&self, collection_name: String) -> HashMap<u64, Vec<u8>> {
         let metadata_path = format!("./storage/{}/metadata", collection_name);
         let path = Path::new(&metadata_path);
 
-        let mut metadata_list: Vec<Vec<u8>> = Vec::new();
-
-        let read_dir = fs::read_dir(path);
-        match read_dir {
+        match fs::read_dir(path) {
             Ok(entries) => {
-                for entry in entries {
-                    let entry = entry.unwrap();
+                let mut result = HashMap::new();
+                for entry in entries.flatten() {
                     let entry_path = entry.path();
-                    if entry.metadata().unwrap().is_file() {
-                        let meta_file_path = entry_path.to_str();
-                        match meta_file_path {
-                            Some(meta_file) => {
-                                let meta_data = fs::read(meta_file).unwrap();
-                                metadata_list.push(meta_data);
-                            }
-                            None => {}
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                if e.kind() == ErrorKind::NotFound {
-                    // Если папка не найдена, возвращаем пустой список
-                    return Vec::new();
-                } else {
-                    panic!("Ошибка чтения директории метадаты: {:?}", e);
-                }
-            }
-        }
-
-        metadata_list
-    }
-
-    /// Возвращает вектор имён файлов метадаты по названию коллекции (без расширения .bin)
-    pub fn get_all_metadata_names(&self, collection_name: String) -> Vec<String> {
-        let metadata_path = format!("./storage/{}/metadata", collection_name);
-        let path = Path::new(&metadata_path);
-
-        let mut metadata_file_names: Vec<String> = Vec::new();
-
-        let read_dir = fs::read_dir(path);
-        match read_dir {
-            Ok(entries) => {
-                for entry in entries {
-                    let entry = entry.unwrap();
-                    let entry_path = entry.path();
-                    if entry.metadata().unwrap().is_file() {
-                        if let Some(file_name) = entry_path.file_name() {
-                            if let Some(file_name_str) = file_name.to_str() {
-                                // Удаляем приписку ".bin" если она есть
-                                if let Some(stripped) = file_name_str.strip_suffix(".bin") {
-                                    metadata_file_names.push(stripped.to_string());
-                                } else {
-                                    metadata_file_names.push(file_name_str.to_string());
+                    if entry_path.is_file() {
+                        if let Some(file_name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                            // Получаем hash из имени файла (без .bin)
+                            let hash_str = file_name.strip_suffix(".bin").unwrap_or(file_name);
+                            if let Ok(hash) = hash_str.parse::<u64>() {
+                                if let Ok(data) = fs::read(&entry_path) {
+                                    result.insert(hash, data);
                                 }
                             }
                         }
                     }
                 }
-            }
+                result
+            },
             Err(e) => {
                 if e.kind() == ErrorKind::NotFound {
-                    // Если папка не найдена, возвращаем пустой список
-                    return Vec::new();
+                    HashMap::new()
                 } else {
                     panic!("Ошибка чтения директории метадаты: {:?}", e);
                 }
             }
         }
+    }
 
-        metadata_file_names
+    /// Возвращает вектор имён файлов метадаты по названию коллекции (без расширения .bin) в виде Vec<u64>
+    pub fn get_all_metadata_names(&self, collection_name: String) -> Vec<u64> {
+        let metadata_path = format!("./storage/{}/metadata", collection_name);
+        let path = Path::new(&metadata_path);
+
+        match fs::read_dir(path) {
+            Ok(entries) => entries.filter_map(|entry| {
+                entry.ok().and_then(|e| {
+                    let entry_path = e.path();
+                    if entry_path.is_file() {
+                        entry_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .and_then(|s| s.strip_suffix(".bin").or(Some(s)))
+                            .and_then(|s| s.parse::<u64>().ok())
+                    } else {
+                        None
+                    }
+                })
+            }).collect(),
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    Vec::new()
+                } else {
+                    panic!("Ошибка чтения директории метадаты: {:?}", e);
+                }
+            }
+        }
     }
 
     /// Читает конкретный файл метадаты по имени коллекции и имени файла метадаты (без расширения)
-    pub fn read_metadata(&self, collection_name: String, metadata_name: String) -> Option<Vec<u8>> {
-        let metadata_path_bin = format!("./storage/{}/metadata/{}.bin", collection_name, metadata_name);
-        let metadata_path = Path::new(&metadata_path_bin);
-
-        match fs::read(metadata_path) {
+    pub fn read_metadata(&self, collection_name: String, metadata_hash: u64) -> Option<Vec<u8>> {
+        let metadata_path_bin = format!("./storage/{}/metadata/{}.bin", collection_name, metadata_hash);
+        match fs::read(&metadata_path_bin) {
             Ok(data) => Some(data),
             Err(e) => {
                 if e.kind() == ErrorKind::NotFound {
@@ -280,16 +265,6 @@ impl StorageController {
                 }
             }
         }
-    }
-
-    /// Загружает коллекцию по имени (пока не реализовано)
-    pub fn load(&mut self, colelction_name: String) {
-
-    }
-
-    /// Сохраняет объект, реализующий трейт Object (пока не реализовано)
-    pub fn dump<T: Object>(&self, _obj: T) {
-
     }
 }
 
@@ -314,23 +289,225 @@ impl ConnectionController {
 //  CollectionController impl
 
 impl CollectionController {
-    pub fn new(storage_controller : StorageController) -> CollectionController {
-        CollectionController { storage_controller: storage_controller, collections: None }
+    pub fn new(storage_controller: StorageController) -> CollectionController {
+        CollectionController { storage_controller, collections: None }
     }
 
     pub fn add_collection(&mut self, name: String) -> Result<(), &'static str> {
+        let collections = self.collections.get_or_insert_with(Vec::new);
+        collections.push(Collection::new(Some(name)));
         Ok(())
     }
 
     pub fn delete_collection(&mut self, name: String) -> Result<(), &'static str> {
+        match self.collections.as_mut() {
+            Some(collections) => {
+                if let Some(pos) = collections.iter().position(|c| c.name == name) {
+                    collections.remove(pos);
+                    Ok(())
+                } else {
+                    Err("Коллекция с таким именем не найдена")
+                }
+            }
+            None => Err("Коллекции не инициализированы"),
+        }
+    }
+
+    pub fn get_collection(&self, name: &str) -> Option<&Collection> {
+        self.collections.as_ref()?.iter().find(|c| c.name == name)
+    }
+
+    pub fn add_vector(_col: Collection, _raw_vec: f64) -> Result<(), &'static str> {
         Ok(())
     }
 
-    pub fn get_collection(&self, name: String) -> Option<Collection> {
-        None
+    // Сохраняет одну коллекцию и все её векторы
+    pub fn dump_one(&self, collection: &Collection) {
+        let collection_name = &collection.name;
+        match collection.dump() {
+            Ok((raw_data, hash_id)) => {
+                if let Err(e) = self.storage_controller.save_collection(collection_name.clone(), raw_data, hash_id) {
+                    eprintln!("Ошибка сохранения коллекции '{}': {:?}", collection_name, e);
+                    return;
+                }
+                println!("Коллекция '{}' успешно сохранена (hash_id: {}).", collection_name, hash_id);
+            }
+            Err(_) => {
+                eprintln!("Ошибка сериализации коллекции '{}'.", collection_name);
+                return;
+            }
+        }
+
+        for (vec_id, vec_raw_data) in collection.vectors_controller.dump() {
+            match self.storage_controller.save_vector(collection_name.clone(), vec_raw_data, vec_id) {
+                Ok(_) => println!("Вектор с hash_id {} успешно сохранён в коллекции '{}'.", vec_id, collection_name),
+                Err(e) => eprintln!("Ошибка сохранения вектора с hash_id {} в коллекции '{}': {:?}", vec_id, collection_name, e),
+            }
+        }
+
+        for (meta_id, meta_raw_data) in collection.metadata_controller.dump() {
+            match self.storage_controller.save_metadata(collection_name.clone(), meta_raw_data, meta_id) {
+                Ok(_) => println!("Метадата с hash_id {} успешно сохранена в коллекции '{}'.", meta_id, collection_name),
+                Err(e) => eprintln!("Ошибка сохранения метадаты с hash_id {} в коллекции '{}': {:?}", meta_id, collection_name, e),
+            }
+        }
     }
 
-    pub fn add_vector(col: Collection, raw_vec: f64) -> Result<(), &'static str> {
-        Ok(())
+    // Сохраняет все коллекции
+    pub fn dump(&self) {
+        match &self.collections {
+            Some(collections) if !collections.is_empty() => {
+                for collection in collections {
+                    self.dump_one(collection);
+                }
+            }
+            _ => println!("Нет коллекций для сохранения."),
+        }
+    }
+
+    pub fn load_one(&mut self, name: String) {
+        if let Some(raw_collection) = self.storage_controller.read_collection(name.clone()) {
+            let mut collection = Collection::new(None);
+            collection.load(raw_collection);
+
+            let raw_vector = self.storage_controller.read_all_vector(name.clone());
+            collection.vectors_controller.load(raw_vector);
+
+            let raw_meta = self.storage_controller.read_all_metadata(name);
+            collection.metadata_controller.load(raw_meta);
+
+            match &mut self.collections {
+                Some(collections) => {
+                    collections.push(collection);
+                }
+                None => {
+                    self.collections = Some(vec![collection]);
+                }
+            }
+        }
+    }
+
+    pub fn load(&mut self) {
+        let collection_names = self.storage_controller.get_all_collections_name();
+        let mut count = 0;
+
+        for name in collection_names {
+            let before = self.collections.as_ref().map(|c| c.len()).unwrap_or(0);
+            self.load_one(name);
+            let after = self.collections.as_ref().map(|c| c.len()).unwrap_or(0);
+            if after > before {
+                count += 1;
+            }
+        }
+
+        if count > 0 {
+            println!("Загружено {} коллекций.", count);
+        } else {
+            println!("Коллекции не найдены в storage.");
+        }
+    }
+}
+
+//  VectorController impl
+
+impl ObjectController for VectorController {
+    fn load(&mut self, raw_data: HashMap<u64, Vec<u8>>) {
+        let mut vectors = Vec::new();
+        for (hash_id, data) in raw_data {
+            let mut vector = Vector::new(None, None);
+            vector.load(data);
+            vector.set_hash_id(hash_id);
+            vectors.push(vector);
+        }
+        self.vectors = Some(vectors);
+    }
+
+    fn dump(&self) -> HashMap<u64, Vec<u8>> {
+        let mut ready_storage_data: HashMap<u64, Vec<u8>> = HashMap::new();
+        if let Some(ref vectors) = self.vectors {
+            for vector in vectors {
+                match vector.dump() {
+                    Ok((raw_vector, hash_id)) => {
+                        ready_storage_data.insert(hash_id, raw_vector);
+                    }
+                    Err(_) => {
+                        eprintln!("Ошибка сериализации вектора.");
+                    }
+                }
+            }
+        }
+
+        ready_storage_data
+    }
+}
+
+impl VectorController {
+    pub fn new() -> VectorController {
+        VectorController { 
+            vectors: None,
+            metrics: None,
+            vectror_length: None,
+        }
+    }
+
+    pub fn get_length(&self) -> u8 {
+        match self.vectror_length {
+            Some(length) => length,
+            None => 0,
+        }
+    }
+
+    pub fn set_length(&mut self, length: u8) {
+        self.vectror_length = Some(length);
+    }
+
+    pub fn get_metrics(&self) -> &str {
+        if let Some(metrics) = &self.metrics {
+            metrics.as_str()
+        } else {
+            ""
+        }
+    }
+
+    pub fn set_metrics(&mut self, metrics: String) {
+        self.metrics = Some(metrics);
+    }
+}
+
+//  MatdataController impl
+
+impl ObjectController for MetadataController {
+    fn load(&mut self, raw_data: HashMap<u64, Vec<u8>>) {
+        let mut metas = Vec::new();
+        for (_hash_id, data) in raw_data {
+            let mut meta = Metadata::new(None);
+            meta.load(data);
+            metas.push(meta);
+        }
+        self.metas = Some(metas);
+    }
+
+    fn dump(&self) -> HashMap<u64, Vec<u8>> {
+        let mut ready_storage_data: HashMap<u64, Vec<u8>> = HashMap::new();
+        if let Some(ref metas) = self.metas {
+            for meta in metas {
+                match meta.dump() {
+                    Ok((raw_meta, hash_id)) => {
+                        ready_storage_data.insert(hash_id, raw_meta);
+                    }
+                    Err(_) => {
+                        eprintln!("Ошибка сериализации вектора.");
+                    }
+                }
+            }
+        }
+
+        ready_storage_data
+    }
+}
+
+impl MetadataController {
+    pub fn new() -> MetadataController {
+        MetadataController { metas: None }
     }
 }

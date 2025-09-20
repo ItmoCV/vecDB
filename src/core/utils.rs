@@ -1,6 +1,6 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::collections::HashMap;
-use crate::core::objects::{Object, Vector};
+use crate::core::objects::{Vector};
 use serde::{Serialize, Deserialize};
 use std::rc::{Rc};
 
@@ -24,6 +24,14 @@ pub struct StorageMetadata {
     pub data: HashMap<String, String>,
     pub vector_hash_id: u64,
     pub hash_id: u64,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+pub struct StorageCollection {
+    pub name: String,
+    pub hash_id: u64,
+    pub vector_length: u8,
+    pub metrics: String
 }
 
 // utils func
