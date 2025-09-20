@@ -1,5 +1,5 @@
 use std::{collections::HashMap, result::Result};
-use crate::core::{config::ConfigLoader, objects::{Collection, Vector, Metadata}, interfaces::{ObjectController, Object}};
+use crate::core::{config::ConfigLoader, objects::{Collection, Vector, Metadata}, interfaces::{CollectionObjectController, Object}};
 use std::fs;
 use std::path::Path;
 use std::io::ErrorKind;
@@ -410,7 +410,7 @@ impl CollectionController {
 
 //  VectorController impl
 
-impl ObjectController for VectorController {
+impl CollectionObjectController for VectorController {
     fn load(&mut self, raw_data: HashMap<u64, Vec<u8>>) {
         let mut vectors = Vec::new();
         for (hash_id, data) in raw_data {
@@ -476,7 +476,7 @@ impl VectorController {
 
 //  MatdataController impl
 
-impl ObjectController for MetadataController {
+impl CollectionObjectController for MetadataController {
     fn load(&mut self, raw_data: HashMap<u64, Vec<u8>>) {
         let mut metas = Vec::new();
         for (_hash_id, data) in raw_data {
