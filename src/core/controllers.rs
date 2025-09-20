@@ -271,16 +271,19 @@ impl StorageController {
 //  ConnectionController impl
 
 impl ConnectionController {
+    /// Создаёт новый ConnectionController с заданным StorageController и ConfigLoader
     pub fn new(storage_controller : StorageController, config_loader : ConfigLoader) -> ConnectionController {
         let names = Vec::new();
 
         ConnectionController { storage_controller: storage_controller, configs: config_loader.get(names) }
     }
 
+    /// Обработчик соединения (заглушка)
     pub fn connection_handler(&mut self) {
 
     }
 
+    /// Обработчик запросов (заглушка)
     pub fn query_handler(&self) -> Result<(), &'static str> {
         Ok(())
     }
@@ -289,16 +292,19 @@ impl ConnectionController {
 //  CollectionController impl
 
 impl CollectionController {
+    /// Создаёт новый CollectionController с заданным StorageController
     pub fn new(storage_controller: StorageController) -> CollectionController {
         CollectionController { storage_controller, collections: None }
     }
 
+    /// Добавляет новую коллекцию с указанным именем
     pub fn add_collection(&mut self, name: String) -> Result<(), &'static str> {
         let collections = self.collections.get_or_insert_with(Vec::new);
         collections.push(Collection::new(Some(name)));
         Ok(())
     }
 
+    /// Удаляет коллекцию по имени
     pub fn delete_collection(&mut self, name: String) -> Result<(), &'static str> {
         match self.collections.as_mut() {
             Some(collections) => {
@@ -313,15 +319,17 @@ impl CollectionController {
         }
     }
 
+    /// Получает ссылку на коллекцию по имени
     pub fn get_collection(&self, name: &str) -> Option<&Collection> {
         self.collections.as_ref()?.iter().find(|c| c.name == name)
     }
 
+    /// Добавляет вектор в коллекцию (заглушка)
     pub fn add_vector(_col: Collection, _raw_vec: f64) -> Result<(), &'static str> {
         Ok(())
     }
 
-    // Сохраняет одну коллекцию и все её векторы
+    /// Сохраняет одну коллекцию и все её векторы и метаданные
     pub fn dump_one(&self, collection: &Collection) {
         let collection_name = &collection.name;
         match collection.dump() {
@@ -353,7 +361,7 @@ impl CollectionController {
         }
     }
 
-    // Сохраняет все коллекции
+    /// Сохраняет все коллекции
     pub fn dump(&self) {
         match &self.collections {
             Some(collections) if !collections.is_empty() => {
@@ -365,6 +373,7 @@ impl CollectionController {
         }
     }
 
+    /// Загружает одну коллекцию по имени из storage
     pub fn load_one(&mut self, name: String) {
         if let Some(raw_collection) = self.storage_controller.read_collection(name.clone()) {
             let mut collection = Collection::new(None);
@@ -387,6 +396,7 @@ impl CollectionController {
         }
     }
 
+    /// Загружает все коллекции из storage
     pub fn load(&mut self) {
         let collection_names = self.storage_controller.get_all_collections_name();
         let mut count = 0;
@@ -411,6 +421,7 @@ impl CollectionController {
 //  VectorController impl
 
 impl CollectionObjectController for VectorController {
+    /// Загружает векторы из HashMap<u64, Vec<u8>> (hash_id -> данные)
     fn load(&mut self, raw_data: HashMap<u64, Vec<u8>>) {
         let mut vectors = Vec::new();
         for (hash_id, data) in raw_data {
@@ -422,6 +433,7 @@ impl CollectionObjectController for VectorController {
         self.vectors = Some(vectors);
     }
 
+    /// Сохраняет векторы в HashMap<u64, Vec<u8>> (hash_id -> данные)
     fn dump(&self) -> HashMap<u64, Vec<u8>> {
         let mut ready_storage_data: HashMap<u64, Vec<u8>> = HashMap::new();
         if let Some(ref vectors) = self.vectors {
@@ -442,6 +454,7 @@ impl CollectionObjectController for VectorController {
 }
 
 impl VectorController {
+    /// Создаёт новый VectorController
     pub fn new() -> VectorController {
         VectorController { 
             vectors: None,
@@ -450,6 +463,7 @@ impl VectorController {
         }
     }
 
+    /// Возвращает длину вектора (если задана)
     pub fn get_length(&self) -> u8 {
         match self.vectror_length {
             Some(length) => length,
@@ -457,10 +471,12 @@ impl VectorController {
         }
     }
 
+    /// Устанавливает длину вектора
     pub fn set_length(&mut self, length: u8) {
         self.vectror_length = Some(length);
     }
 
+    /// Возвращает метрику вектора (если задана)
     pub fn get_metrics(&self) -> &str {
         if let Some(metrics) = &self.metrics {
             metrics.as_str()
@@ -469,6 +485,7 @@ impl VectorController {
         }
     }
 
+    /// Устанавливает метрику вектора
     pub fn set_metrics(&mut self, metrics: String) {
         self.metrics = Some(metrics);
     }
@@ -477,6 +494,7 @@ impl VectorController {
 //  MatdataController impl
 
 impl CollectionObjectController for MetadataController {
+    /// Загружает метаданные из HashMap<u64, Vec<u8>> (hash_id -> данные)
     fn load(&mut self, raw_data: HashMap<u64, Vec<u8>>) {
         let mut metas = Vec::new();
         for (_hash_id, data) in raw_data {
@@ -487,6 +505,7 @@ impl CollectionObjectController for MetadataController {
         self.metas = Some(metas);
     }
 
+    /// Сохраняет метаданные в HashMap<u64, Vec<u8>> (hash_id -> данные)
     fn dump(&self) -> HashMap<u64, Vec<u8>> {
         let mut ready_storage_data: HashMap<u64, Vec<u8>> = HashMap::new();
         if let Some(ref metas) = self.metas {
@@ -507,6 +526,7 @@ impl CollectionObjectController for MetadataController {
 }
 
 impl MetadataController {
+    /// Создаёт новый MetadataController
     pub fn new() -> MetadataController {
         MetadataController { metas: None }
     }
