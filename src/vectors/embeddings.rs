@@ -1,4 +1,7 @@
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use chrono::{DateTime, Utc};
+use std::collections::HashMap;
+use std::error::Error;
 
 pub fn make_embeddings(
     sentence: &str,
@@ -15,4 +18,129 @@ pub fn make_embeddings(
 
     // Теперь ты можешь сохранить `embedding` в свой список/векторную БД
     Ok(embeddings[0].clone())
+}
+
+
+#[derive(Debug)]
+pub struct Vector {
+    pub id: String,
+    pub embedding: Vec<f32>,
+    pub created_at: DateTime<Utc>,
+    pub metadata: HashMap<String, String>,
+}
+
+pub fn create_vector_with_embedding(
+    sentence: &str,
+    metadata: HashMap<String, String>,
+) -> Result<Vector, Box<dyn std::error::Error>> {
+    let embedding = make_embeddings(sentence)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let created_at = Utc::now();
+
+    Ok(Vector {
+        id,
+        embedding,
+        created_at,
+        metadata,
+    })
+}
+
+
+pub struct VectorController {
+    vectors: Vec<Vector>,
+}
+
+impl VectorController {
+    pub fn new() -> Self {
+        VectorController { vectors: Vec::new() }
+    }
+
+    /// Добавляет вектор
+    pub fn add_vector(&mut self, vector: Vector) {
+        self.vectors.push(vector);
+    }
+
+    /// Удаляет вектор по ID
+    pub fn remove_vector(&mut self, id: &str) -> bool {
+        if let Some(pos) = self.vectors.iter().position(|v| v.id == id) {
+            self.vectors.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Обновляет вектор по ID
+    pub fn update_vector(&mut self, id: &str, new_embedding: Vec<f32>, new_meta: HashMap<String, String>) -> bool {
+        if let Some(v) = self.vectors.iter_mut().find(|v| v.id == id) {
+            v.embedding = new_embedding;
+            v.metadata = new_meta;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Находит наиболее похожий вектор к запросу
+    pub fn find_most_similar(&self, query: &str) -> Result<(usize, f32), Box<dyn std::error::Error>> {
+        find_most_similar(query, &self.vectors)
+    }
+
+    /// Получить вектор по индексу
+    pub fn get_vector(&self, index: usize) -> Option<&Vector> {
+        self.vectors.get(index)
+    }
+
+    /// Получить количество векторов
+    pub fn len(&self) -> usize {
+        self.vectors.len()
+    }
+
+    /// Проверить, пустой ли контроллер
+    pub fn is_empty(&self) -> bool {
+        self.vectors.is_empty()
+    }
+}
+
+
+/// Находит наиболее близкий Vector из списка к заданному запросу.
+///
+/// Возвращает кортеж: (индекс наиболее близкого Vector, значение косинусного сходства).
+pub fn find_most_similar(
+    query: &str,
+    vectors: &[Vector],
+) -> Result<(usize, f32), Box<dyn Error>> {
+    if vectors.is_empty() {
+        return Err("Vector list is empty".into());
+    }
+
+     let query_embedding = make_embeddings(query)?;
+
+    let mut best_index = 0;
+    let mut best_score = f32::NEG_INFINITY;
+
+    for (i, vector) in vectors.iter().enumerate() {
+        let score = cosine_similarity(&query_embedding, &vector.embedding);
+        if score > best_score {
+            best_score = score;
+            best_index = i;
+        }
+    }
+
+    Ok((best_index, best_score))
+}
+
+/// Вычисляет косинусное сходство между двумя векторами.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len(), "Vectors must have the same dimension");
+
+    let dot_product: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+    if norm_a == 0.0 || norm_b == 0.0 {
+        0.0
+    } else {
+        dot_product / (norm_a * norm_b)
+    }
 }
