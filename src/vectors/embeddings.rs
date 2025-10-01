@@ -21,12 +21,18 @@ pub fn make_embeddings(
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Vector {
     pub id: String,
     pub embedding: Vec<f32>,
     pub created_at: DateTime<Utc>,
     pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Metadata {
+    pub vector_id: String,
+    pub data: HashMap<String, String>,
 }
 
 pub fn create_vector_with_embedding(
@@ -70,14 +76,15 @@ impl VectorController {
         }
     }
 
-    /// Обновляет вектор по ID
-    pub fn update_vector(&mut self, id: &str, new_embedding: Vec<f32>, new_meta: HashMap<String, String>) -> bool {
+    /// Обновляет вектор по ID (новый текст -> новый эмбеддинг)
+    pub fn update_vector_by_text(&mut self, id: &str, new_text: &str, new_meta: HashMap<String, String>) -> Result<bool, Box<dyn Error>> {
         if let Some(v) = self.vectors.iter_mut().find(|v| v.id == id) {
+            let new_embedding = make_embeddings(new_text)?;
             v.embedding = new_embedding;
             v.metadata = new_meta;
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -89,6 +96,11 @@ impl VectorController {
     /// Получить вектор по индексу
     pub fn get_vector(&self, index: usize) -> Option<&Vector> {
         self.vectors.get(index)
+    }
+
+    /// Находит вектор по ID
+    pub fn get_vector_by_id(&self, id: &str) -> Option<&Vector> {
+        self.vectors.iter().find(|v| v.id == id)
     }
 
     /// Получить количество векторов
@@ -142,5 +154,66 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         0.0
     } else {
         dot_product / (norm_a * norm_b)
+    }
+}
+
+
+/// Метадата
+pub struct MetadataController {
+    metadata: HashMap<String, Metadata>,
+}
+
+impl MetadataController {
+    pub fn new() -> Self {
+        MetadataController {
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Добавление метадаты в конкретный id вектора
+    pub fn add_metadata(&mut self, vector_id: String, data: HashMap<String, String>) -> Result<(), Box<dyn Error>> {
+        let metadata = Metadata {
+            vector_id: vector_id.clone(),
+            data,
+        };
+        self.metadata.insert(vector_id, metadata);
+        Ok(())
+    }
+
+    /// Фильтр по метадате и вывод id векторов, которые удовлетворяют условию
+    pub fn filter_by_metadata(&self, filters: &HashMap<String, String>) -> Vec<String> {
+        let mut result = Vec::new();
+        
+        for (vector_id, metadata) in &self.metadata {
+            let mut matches = true;
+            
+            for (key, value) in filters {
+                if let Some(metadata_value) = metadata.data.get(key) {
+                    if metadata_value != value {
+                        matches = false;
+                        break;
+                    }
+                } else {
+                    matches = false;
+                    break;
+                }
+            }
+            
+            if matches {
+                result.push(vector_id.clone());
+            }
+        }
+        
+        result
+    }
+
+    /// Удаление метадаты у вектора по конкретному id
+    pub fn remove_metadata(&mut self, vector_id: &str) -> bool {
+        self.metadata.remove(vector_id).is_some()
+    }
+
+    /// Получение метадаты по ID вектора
+    pub fn get_metadata(&self, vector_id: &str) -> Option<&Metadata> {
+        self.metadata.get(vector_id)
     }
 }
