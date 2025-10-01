@@ -15,7 +15,7 @@ pub struct Metadata {
 
 #[derive(Debug, Clone)]
 pub struct Vector {
-    pub hash_id: string,
+    pub hash_id: String,
     pub embedding: Vec<f32>,
     pub created_at: DateTime<Utc>,
     pub metadata: HashMap<String, String>,
