@@ -65,13 +65,17 @@ impl VectorController {
     pub fn update_vector(
         &mut self,
         id: u64,
-        new_embedding: Vec<f32>,
-        new_metadata: HashMap<String, String>,
+        new_embedding: Option<Vec<f32>>,
+        new_metadata: Option<HashMap<String, String>>,
     ) -> Result<(), String> {
         if let Some(ref mut vectors) = self.vectors {
             if let Some(v) = vectors.iter_mut().find(|v| v.hash_id() == id) {
-                v.data = new_embedding;
-                v.metadata = new_metadata;
+                if let Some(embedding) = new_embedding {
+                    v.data = embedding;
+                }
+                if let Some(metadata) = new_metadata {
+                    v.metadata = metadata;
+                }
                 return Ok(());
             }
         }

@@ -1,8 +1,11 @@
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use std::error::Error;
 
 use crate::core::{objects::{Vector}};
 
+#[cfg(not(test))]
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+
+#[cfg(not(test))]
 pub fn make_embeddings(
     sentence: &str,
 ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
@@ -17,6 +20,21 @@ pub fn make_embeddings(
     let embeddings = model.embed(documents, None)?;
 
     Ok(embeddings[0].clone())
+}
+
+#[cfg(test)]
+pub fn make_embeddings(
+    sentence: &str,
+) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    let mut embedding = vec![0.0_f32; 4];
+
+    for (index, byte) in sentence.as_bytes().iter().take(3).enumerate() {
+        embedding[index] = *byte as f32;
+    }
+
+    embedding[3] = sentence.chars().count() as f32;
+
+    Ok(embedding)
 }
 
 pub fn find_most_similar(
