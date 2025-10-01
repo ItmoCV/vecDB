@@ -1,3 +1,4 @@
+// src/lib.rs
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -29,12 +30,6 @@ pub struct Vector {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Metadata {
-    pub vector_id: String,
-    pub data: HashMap<String, String>,
-}
-
 pub fn create_vector_with_embedding(
     sentence: &str,
     metadata: HashMap<String, String>,
@@ -51,9 +46,8 @@ pub fn create_vector_with_embedding(
     })
 }
 
-
 pub struct VectorController {
-    vectors: Vec<Vector>,
+    pub vectors: Vec<Vector>,
 }
 
 impl VectorController {
@@ -61,12 +55,10 @@ impl VectorController {
         VectorController { vectors: Vec::new() }
     }
 
-    /// Добавляет вектор
     pub fn add_vector(&mut self, vector: Vector) {
         self.vectors.push(vector);
     }
 
-    /// Удаляет вектор по ID
     pub fn remove_vector(&mut self, id: &str) -> bool {
         if let Some(pos) = self.vectors.iter().position(|v| v.id == id) {
             self.vectors.remove(pos);
@@ -76,48 +68,81 @@ impl VectorController {
         }
     }
 
-    /// Обновляет вектор по ID (новый текст -> новый эмбеддинг)
-    pub fn update_vector_by_text(&mut self, id: &str, new_text: &str, new_meta: HashMap<String, String>) -> Result<bool, Box<dyn Error>> {
+    pub fn update_vector_by_text(&mut self, id: &str, new_text: &str, new_metadata: HashMap<String, String>) -> Result<bool, Box<dyn Error>> {
         if let Some(v) = self.vectors.iter_mut().find(|v| v.id == id) {
             let new_embedding = make_embeddings(new_text)?;
             v.embedding = new_embedding;
-            v.metadata = new_meta;
+            v.metadata = new_metadata;
             Ok(true)
         } else {
             Ok(false)
         }
     }
 
-    /// Находит наиболее похожий вектор к запросу
+    /// Добавляет метаданные к вектору по ID (объединяет с существующими)
+    pub fn add_metadata_to_vector(&mut self, id: &str, new_metadata: HashMap<String, String>) -> bool {
+        if let Some(v) = self.vectors.iter_mut().find(|v| v.id == id) {
+            v.metadata.extend(new_metadata);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Удаляет метаданные по ключу у вектора по ID
+    pub fn remove_metadata_from_vector(&mut self, id: &str, key: &str) -> bool {
+        if let Some(v) = self.vectors.iter_mut().find(|v| v.id == id) {
+            v.metadata.remove(key);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn find_most_similar(&self, query: &str) -> Result<(usize, f32), Box<dyn std::error::Error>> {
         find_most_similar(query, &self.vectors)
     }
 
-    /// Получить вектор по индексу
     pub fn get_vector(&self, index: usize) -> Option<&Vector> {
         self.vectors.get(index)
     }
 
-    /// Находит вектор по ID
     pub fn get_vector_by_id(&self, id: &str) -> Option<&Vector> {
         self.vectors.iter().find(|v| v.id == id)
     }
 
-    /// Получить количество векторов
     pub fn len(&self) -> usize {
         self.vectors.len()
     }
 
-    /// Проверить, пустой ли контроллер
     pub fn is_empty(&self) -> bool {
         self.vectors.is_empty()
     }
+
+    // Новый метод: фильтрация по метаданным
+    pub fn filter_by_metadata(&self, filters: &HashMap<String, String>) -> Vec<String> {
+        let mut result = Vec::new();
+        for vector in &self.vectors {
+            let mut matches = true;
+            for (key, value) in filters {
+                if let Some(v) = vector.metadata.get(key) {
+                    if v != value {
+                        matches = false;
+                        break;
+                    }
+                } else {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                result.push(vector.id.clone());
+            }
+        }
+        result
+    }
 }
 
-
-/// Находит наиболее близкий Vector из списка к заданному запросу.
-///
-/// Возвращает кортеж: (индекс наиболее близкого Vector, значение косинусного сходства).
 pub fn find_most_similar(
     query: &str,
     vectors: &[Vector],
@@ -126,7 +151,7 @@ pub fn find_most_similar(
         return Err("Vector list is empty".into());
     }
 
-     let query_embedding = make_embeddings(query)?;
+    let query_embedding = make_embeddings(query)?;
 
     let mut best_index = 0;
     let mut best_score = f32::NEG_INFINITY;
@@ -142,7 +167,6 @@ pub fn find_most_similar(
     Ok((best_index, best_score))
 }
 
-/// Вычисляет косинусное сходство между двумя векторами.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len(), "Vectors must have the same dimension");
 
@@ -154,66 +178,5 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         0.0
     } else {
         dot_product / (norm_a * norm_b)
-    }
-}
-
-
-/// Метадата
-pub struct MetadataController {
-    metadata: HashMap<String, Metadata>,
-}
-
-impl MetadataController {
-    pub fn new() -> Self {
-        MetadataController {
-            metadata: HashMap::new(),
-        }
-    }
-
-    /// Добавление метадаты в конкретный id вектора
-    pub fn add_metadata(&mut self, vector_id: String, data: HashMap<String, String>) -> Result<(), Box<dyn Error>> {
-        let metadata = Metadata {
-            vector_id: vector_id.clone(),
-            data,
-        };
-        self.metadata.insert(vector_id, metadata);
-        Ok(())
-    }
-
-    /// Фильтр по метадате и вывод id векторов, которые удовлетворяют условию
-    pub fn filter_by_metadata(&self, filters: &HashMap<String, String>) -> Vec<String> {
-        let mut result = Vec::new();
-        
-        for (vector_id, metadata) in &self.metadata {
-            let mut matches = true;
-            
-            for (key, value) in filters {
-                if let Some(metadata_value) = metadata.data.get(key) {
-                    if metadata_value != value {
-                        matches = false;
-                        break;
-                    }
-                } else {
-                    matches = false;
-                    break;
-                }
-            }
-            
-            if matches {
-                result.push(vector_id.clone());
-            }
-        }
-        
-        result
-    }
-
-    /// Удаление метадаты у вектора по конкретному id
-    pub fn remove_metadata(&mut self, vector_id: &str) -> bool {
-        self.metadata.remove(vector_id).is_some()
-    }
-
-    /// Получение метадаты по ID вектора
-    pub fn get_metadata(&self, vector_id: &str) -> Option<&Metadata> {
-        self.metadata.get(vector_id)
     }
 }
