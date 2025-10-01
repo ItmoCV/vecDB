@@ -1,3 +1,4 @@
+// src/main.rs
 use std::collections::HashMap;
 
 use crate::vectors::embeddings::{VectorController, create_vector_with_embedding};
@@ -38,10 +39,38 @@ fn main() {
 
     let mut controller = VectorController::new();
 
-    // Добавление вектора
     controller.add_vector(vector1);
     controller.add_vector(vector2);
     controller.add_vector(vector3);
+
+    let target_id = &controller.get_vector(0).unwrap().id.clone();
+
+    // Добавляем новую метадату к вектору
+    let mut additional_meta = HashMap::new();
+    additional_meta.insert("lang".to_string(), "en".to_string());
+
+    if controller.add_metadata_to_vector(target_id, additional_meta) {
+        println!("Metadata added to vector: {}", target_id);
+    } else {
+        println!("Vector not found.");
+    }
+
+    // Выводим обновлённые метаданные
+    if let Some(vector) = controller.get_vector_by_id(target_id) {
+        println!("Updated metadata: {:?}", vector.metadata);
+    }
+
+    // Удаляем поле "lang" из метаданных
+    if controller.remove_metadata_from_vector(target_id, "lang") {
+        println!("Metadata 'lang' removed from vector: {}", target_id);
+    } else {
+        println!("Vector or key not found.");
+    }
+
+    // Выводим метаданные после удаления
+    if let Some(vector) = controller.get_vector_by_id(target_id) {
+        println!("Metadata after removal: {:?}", vector.metadata);
+    }
 
     // Поиск наиболее похожего вектора
     match controller.find_most_similar("hello") {
@@ -85,6 +114,10 @@ fn main() {
         println!("Updated embedding: {:?}", vector.embedding);
         println!("Updated meta: {:?}", vector.metadata);
     }
-    
 
+    // Фильтрация по метадате
+    let mut filters = HashMap::new();
+    filters.insert("category".to_string(), "greeting".to_string());
+    let filtered_ids = controller.filter_by_metadata(&filters);
+    println!("Vectors with category 'greeting': {:?}", filtered_ids);
 }
