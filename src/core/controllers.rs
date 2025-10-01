@@ -1,8 +1,10 @@
 use std::{collections::HashMap, result::Result};
-use crate::core::{config::ConfigLoader, objects::{Collection, Vector, Metadata}, interfaces::{CollectionObjectController, Object}};
+use crate::core::{config::ConfigLoader, objects::{Collection, Vector, Metadata}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}};
 use std::fs;
 use std::path::Path;
 use std::io::ErrorKind;
+use chrono::{Utc};
+use std::error::Error;
 
 // structs define
 
@@ -20,17 +22,126 @@ pub struct CollectionController {
     collections: Option<Vec<Collection>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VectorController {
-    vectors: Option<Vec<Vector>>,
-    metrics: Option<String>,
-    vectror_length: Option<u8>,
+    pub vectors: Vec<Vector>,
 }
 
-#[derive(Debug)]
-pub struct  MetadataController {
-    metas: Option<Vec<Metadata>>,
+impl VectorController {
+    pub fn new() -> Self {
+        VectorController { vectors: Vec::new() }
+    }
+
+    /// создает объект вектора
+    pub fn create_vector_with_embedding(
+        &self,
+        embedding: Vec<f32>,
+        metadata: HashMap<String, String>,
+    ) -> Result<Vector, Box<dyn std::error::Error>> {
+        let hash_id = uuid::Uuid::new_v4().to_string();
+        let created_at = Utc::now();
+
+        Ok(Vector {
+            hash_id,
+            embedding,
+            created_at,
+            metadata,
+        })
+    }
+
+    /// добавляет объект вектора к базе
+    pub fn add_vector_from_embedding(
+        &mut self,
+        embedding: Vec<f32>,
+        metadata: HashMap<String, String>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let vector = self.create_vector_with_embedding(embedding, metadata)?;
+        let id = vector.id.clone();
+        self.vectors.push(vector);
+        Ok(id)
+    }
+
+
+    /// удаляет вектор по id
+    pub fn remove_vector(&mut self, id: &str) -> bool {
+        if let Some(pos) = self.vectors.iter().position(|v| v.hash_id == id) {
+            self.vectors.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// обновляет эмбеддинг по id
+    pub fn update_vector_by_embedding(&mut self, id: &str, new_embedding: Vec<f32>, new_metadata: HashMap<String, String>) -> Result<bool, Box<dyn Error>> {
+        if let Some(v) = self.vectors.iter_mut().find(|v| v.hash_id == id) {
+            v.embedding = new_embedding;
+            v.metadata = new_metadata;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Добавляет метаданные к вектору по ID (объединяет с существующими)
+    pub fn add_metadata_to_vector(&mut self, id: &str, new_metadata: HashMap<String, String>) -> bool {
+        if let Some(v) = self.vectors.iter_mut().find(|v| v.hash_id == id) {
+            v.metadata.extend(new_metadata);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Удаляет метаданные по ключу у вектора по ID
+    pub fn remove_metadata_from_vector(&mut self, id: &str, key: &str) -> bool {
+        if let Some(v) = self.vectors.iter_mut().find(|v| v.hash_id == id) {
+            v.metadata.remove(key);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// поиск наиболее похожего вектора
+    pub fn find_most_similar(&self, query: &str) -> Result<(usize, f32), Box<dyn std::error::Error>> {
+        find_most_similar(query, &self.vectors)
+    }
+
+    /// получение вектора по порядку
+    pub fn get_vector(&self, index: usize) -> Option<&Vector> {
+        self.vectors.get(index)
+    }
+
+    /// получение вектора по индексу
+    pub fn get_vector_by_id(&self, id: &str) -> Option<&Vector> {
+        self.vectors.iter().find(|v| v.hash_id == id)
+    }
+
+    // фильтрация по метаданным
+    pub fn filter_by_metadata(&self, filters: &HashMap<String, String>) -> Vec<String> {
+        let mut result = Vec::new();
+        for vector in &self.vectors {
+            let mut matches = true;
+            for (key, value) in filters {
+                if let Some(v) = vector.metadata.get(key) {
+                    if v != value {
+                        matches = false;
+                        break;
+                    }
+                } else {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                result.push(vector.hash_id.clone());
+            }
+        }
+        result
+    }
 }
+
 
 // Impl block
 
@@ -453,47 +564,10 @@ impl CollectionObjectController for VectorController {
     }
 }
 
-impl VectorController {
-    /// Создаёт новый VectorController
-    pub fn new() -> VectorController {
-        VectorController { 
-            vectors: None,
-            metrics: None,
-            vectror_length: None,
-        }
-    }
-
-    /// Возвращает длину вектора (если задана)
-    pub fn get_length(&self) -> u8 {
-        match self.vectror_length {
-            Some(length) => length,
-            None => 0,
-        }
-    }
-
-    /// Устанавливает длину вектора
-    pub fn set_length(&mut self, length: u8) {
-        self.vectror_length = Some(length);
-    }
-
-    /// Возвращает метрику вектора (если задана)
-    pub fn get_metrics(&self) -> &str {
-        if let Some(metrics) = &self.metrics {
-            metrics.as_str()
-        } else {
-            ""
-        }
-    }
-
-    /// Устанавливает метрику вектора
-    pub fn set_metrics(&mut self, metrics: String) {
-        self.metrics = Some(metrics);
-    }
-}
 
 //  MatdataController impl
 
-impl CollectionObjectController for MetadataController {
+impl CollectionObjectController for VectorController {
     /// Загружает метаданные из HashMap<u64, Vec<u8>> (hash_id -> данные)
     fn load(&mut self, raw_data: HashMap<u64, Vec<u8>>) {
         let mut metas = Vec::new();

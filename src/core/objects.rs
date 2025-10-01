@@ -1,7 +1,8 @@
 use std::{collections::HashMap};
-use crate::core::{controllers::{MetadataController}, interfaces::Object, utils::{calculate_hash, StorageCollection, StorageMetadata, StorageVector}};
+use crate::core::{interfaces::Object, utils::{calculate_hash, StorageCollection, StorageMetadata, StorageVector}};
 use std::fmt;
 use crate::core::controllers::VectorController;
+use chrono::{DateTime, Utc};
 
 // structs define
 
@@ -14,17 +15,16 @@ pub struct Metadata {
 
 #[derive(Debug, Clone)]
 pub struct Vector {
-    pub data: Vec<u32>,
-    pub timestamp: i64,
-    meta_hash_id: Option<u64>,
-    hash_id: u64,
+    pub hash_id: string,
+    pub embedding: Vec<f32>,
+    pub created_at: DateTime<Utc>,
+    pub metadata: HashMap<String, String>,
 }
 
 #[derive(Debug)]
 pub struct Collection {
     pub name: String,
     pub vectors_controller: VectorController,
-    pub metadata_controller: MetadataController,
     hash_id: u64,
 }
 
@@ -134,10 +134,9 @@ impl Object for Vector {
         let decoded: StorageVector = bincode::deserialize(&raw_data[..])
             .expect("Ошибка");
 
-        self.data = decoded.data;
+        self.embedding = decoded.embedding;
         self.hash_id = decoded.hash_id;
-        self.timestamp = decoded.timestamp;
-        self.meta_hash_id = Some(decoded.meta_hash_id);
+        self.created_at = decoded.timestamp;
     }
 
     /// Сохраняет объект Vector в вектор байт (сериализация)
@@ -147,7 +146,7 @@ impl Object for Vector {
             None => 0,
         };
         let storage_data = StorageVector { 
-            data: self.data.to_vec(),
+            data: self.embedding.to_vec(),
             timestamp: self.timestamp,
             meta_hash_id,
             hash_id: self.hash_id,

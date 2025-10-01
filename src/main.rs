@@ -1,74 +1,114 @@
 // src/main.rs
 use std::collections::HashMap;
 
-use crate::vectors::embeddings::{VectorController, create_vector_with_embedding};
+use crate::core::embeddings::make_embeddings;
+use crate::core::controllers::VectorController;
 
 pub mod core;
-pub mod vectors;
+
+// Функция для кодирования текста в эмбеддинг
+fn encode_text(text: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+    make_embeddings(text)
+}
+
+// Функция для создания метаданных
+fn create_metadata(category: &str, additional: Option<HashMap<String, String>>) -> HashMap<String, String> {
+    let mut meta = HashMap::new();
+    meta.insert("category".to_string(), category.to_string());
+    
+    if let Some(additional_meta) = additional {
+        meta.extend(additional_meta);
+    }
+    
+    meta
+}
+
+// Функция для подготовки вектора (кодирование + метаданные)
+fn prepare_vector_data(text: &str, category: &str, additional_meta: Option<HashMap<String, String>>) -> Result<(Vec<f32>, HashMap<String, String>), Box<dyn std::error::Error>> {
+    let embedding = encode_text(text)?;
+    let metadata = create_metadata(category, additional_meta);
+    Ok((embedding, metadata))
+}
 
 fn main() {
-    let mut meta1 = HashMap::new();
-    meta1.insert("category".to_string(), "greeting".to_string());
-    let vector1 = match create_vector_with_embedding("Hello, world!", meta1) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Error creating vector1: {}", e);
-            return;
-        }
-    };
-
-    let mut meta2 = HashMap::new();
-    meta2.insert("category".to_string(), "farewell".to_string());
-    let vector2 = match create_vector_with_embedding("Goodbye, see you later!", meta2) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Error creating vector2: {}", e);
-            return;
-        }
-    };
-
-    let mut meta3 = HashMap::new();
-    meta3.insert("category".to_string(), "greeting".to_string());
-    let vector3 = match create_vector_with_embedding("Hi there!", meta3) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Error creating vector3: {}", e);
-            return;
-        }
-    };
-
     let mut controller = VectorController::new();
 
-    controller.add_vector(vector1);
-    controller.add_vector(vector2);
-    controller.add_vector(vector3);
+    // Подготовка данных для векторов
+    let (embedding1, meta1) = match prepare_vector_data("Hello, world!", "greeting", None) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("Error preparing vector1 data: {}", e);
+            return;
+        }
+    };
 
-    let target_id = &controller.get_vector(0).unwrap().id.clone();
+    let (embedding2, meta2) = match prepare_vector_data("Goodbye, see you later!", "farewell", None) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("Error preparing vector2 data: {}", e);
+            return;
+        }
+    };
+
+    let (embedding3, meta3) = match prepare_vector_data("Hi there!", "greeting", None) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("Error preparing vector3 data: {}", e);
+            return;
+        }
+    };
+
+    // Добавляем векторы через контроллер, передавая уже закодированные эмбеддинги
+    let id1 = match controller.add_vector_from_embedding(embedding1, meta1) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("Error adding vector1: {}", e);
+            return;
+        }
+    };
+
+    let id2 = match controller.add_vector_from_embedding(embedding2, meta2) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("Error adding vector2: {}", e);
+            return;
+        }
+    };
+
+    let id3 = match controller.add_vector_from_embedding(embedding3, meta3) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("Error adding vector3: {}", e);
+            return;
+        }
+    };
+
+    println!("Added vectors with IDs: {}, {}, {}", id1, id2, id3);
 
     // Добавляем новую метадату к вектору
     let mut additional_meta = HashMap::new();
     additional_meta.insert("lang".to_string(), "en".to_string());
 
-    if controller.add_metadata_to_vector(target_id, additional_meta) {
-        println!("Metadata added to vector: {}", target_id);
+    if controller.add_metadata_to_vector(&id1, additional_meta) {
+        println!("Metadata added to vector: {}", id1);
     } else {
         println!("Vector not found.");
     }
 
     // Выводим обновлённые метаданные
-    if let Some(vector) = controller.get_vector_by_id(target_id) {
+    if let Some(vector) = controller.get_vector_by_id(&id1) {
         println!("Updated metadata: {:?}", vector.metadata);
     }
 
     // Удаляем поле "lang" из метаданных
-    if controller.remove_metadata_from_vector(target_id, "lang") {
-        println!("Metadata 'lang' removed from vector: {}", target_id);
+    if controller.remove_metadata_from_vector(&id1, "lang") {
+        println!("Metadata 'lang' removed from vector: {}", id1);
     } else {
         println!("Vector or key not found.");
     }
 
     // Выводим метаданные после удаления
-    if let Some(vector) = controller.get_vector_by_id(target_id) {
+    if let Some(vector) = controller.get_vector_by_id(&id1) {
         println!("Metadata after removal: {:?}", vector.metadata);
     }
 
@@ -81,38 +121,36 @@ fn main() {
     }
 
     // Удаление вектора
-    let id_to_remove = controller.get_vector(0).unwrap().id.clone();
-    controller.remove_vector(&id_to_remove);
-    println!("Removed vector with ID: {}", id_to_remove);
+    controller.remove_vector(&id1);
+    println!("Removed vector with ID: {}", id1);
 
     // Вывод вектора по id
-    let target_id = &controller.get_vector(0).unwrap().id.clone();
-    if let Some(vector) = controller.get_vector_by_id(target_id) {
-        println!("Vector ID: {}", vector.id);
-        println!("Embedding: {:?}", vector.embedding);
+    if let Some(vector) = controller.get_vector_by_id(&id2) {
+        println!("Vector ID: {}", vector.hash_id);
         println!("Metadata: {:?}", vector.metadata);
         println!("Created at: {}", vector.created_at);
     } else {
-        println!("Vector with ID {} not found.", target_id);
+        println!("Vector with ID {} not found.", id2);
     }
 
-    // Обновление вектора
-    let new_meta = {
-        let mut m = HashMap::new();
-        m.insert("category".to_string(), "updated_greeting".to_string());
-        m
+    // Обновление вектора - кодируем новый текст заранее
+    let (new_embedding, new_meta) = match prepare_vector_data("Hello, Rust!", "updated_greeting", None) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("Error preparing new vector data: {}", e);
+            return;
+        }
     };
 
-    match controller.update_vector_by_text(&target_id, "Hello, Rust!", new_meta) {
-        Ok(true) => println!("Vector with ID {} updated successfully.", target_id),
-        Ok(false) => println!("Vector with ID {} not found for update.", target_id),
+    match controller.update_vector_by_embedding(&id2, new_embedding, new_meta) {
+        Ok(true) => println!("Vector with ID {} updated successfully.", id2),
+        Ok(false) => println!("Vector with ID {} not found for update.", id2),
         Err(e) => eprintln!("Error updating vector: {}", e),
     }
 
     // Проверим обновлённый вектор
-    if let Some(vector) = controller.get_vector_by_id(&target_id) {
-        println!("Updated embedding: {:?}", vector.embedding);
-        println!("Updated meta: {:?}", vector.metadata);
+    if let Some(vector) = controller.get_vector_by_id(&id2) {
+        println!("Updated metadata: {:?}", vector.metadata);
     }
 
     // Фильтрация по метадате

@@ -2,6 +2,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::collections::HashMap;
 use crate::core::objects::{Vector};
 use serde::{Serialize, Deserialize};
+use chrono::{DateTime, Utc};
 
 // util types
 
@@ -13,7 +14,7 @@ pub struct VectorResponse {
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct StorageVector {
     pub data: Vec<u32>,
-    pub timestamp: i64,
+    pub timestamp: DateTime<Utc>,
     pub meta_hash_id: u64,
     pub hash_id: u64,
 }
