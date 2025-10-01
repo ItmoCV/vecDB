@@ -4,3 +4,6 @@ pub mod objects;
 pub mod controllers;
 pub mod config;
 pub mod embeddings;
+
+#[cfg(test)]
+pub mod tests;

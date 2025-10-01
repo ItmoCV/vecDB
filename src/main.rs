@@ -144,7 +144,7 @@ fn main() {
         }
     };
 
-    match controller.update_vector(id2, new_embedding, new_meta) {
+    match controller.update_vector(id2, Some(new_embedding), Some(new_meta)) {
         Ok(_) => println!("Вектор с ID {} успешно обновлён.", id2),
         Err(_) => println!("Вектор с ID {} не найден для обновления.", id2),
     }
