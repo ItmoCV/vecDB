@@ -34,7 +34,7 @@ pub fn find_most_similar(
     let mut best_score = f32::NEG_INFINITY;
 
     for (i, vector) in vectors.iter().enumerate() {
-        let score = cosine_similarity(&query_embedding, &vector.embedding);
+        let score = cosine_similarity(&query_embedding, &vector.data);
         if score > best_score {
             best_score = score;
             best_index = i;
