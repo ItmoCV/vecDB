@@ -56,7 +56,7 @@ impl VectorController {
         metadata: HashMap<String, String>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let vector = self.create_vector_with_embedding(embedding, metadata)?;
-        let id = vector.id.clone();
+        let id = vector.hash_id.clone();
         self.vectors.push(vector);
         Ok(id)
     }
