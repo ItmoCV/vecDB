@@ -22,7 +22,7 @@ pub struct StorageVector {
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct StorageMetadata {
     pub data: HashMap<String, String>,
-    pub vector_hash_id: u64,
+    pub vector_hash_id: String,
     pub hash_id: u64,
 }
 
