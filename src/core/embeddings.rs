@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::cmp::Ordering::Equal;
 
 use crate::core::{objects::{Vector}};
 
@@ -52,7 +53,7 @@ pub fn find_most_similar(
         .map(|(i, vector)| (i, cosine_similarity(query, &vector.data)))
         .collect();
 
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Equal));
 
     let top_k = scored.into_iter().take(k).collect();
 
