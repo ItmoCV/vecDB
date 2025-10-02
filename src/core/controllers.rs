@@ -997,9 +997,16 @@ impl BucketController {
     /// Удаляет вектор из соответствующего бакета
     pub fn remove_vector(&mut self, vector_id: u64) -> Result<(), String> {
         if let Some(ref mut buckets) = self.buckets {
-            for bucket in buckets.iter_mut() {
+            for (index, bucket) in buckets.iter_mut().enumerate() {
                 if bucket.contains_vector(vector_id) {
-                    return bucket.remove_vector(vector_id);
+                    let result = bucket.remove_vector(vector_id);
+                    
+                    // Если вектор успешно удален, проверяем, не стал ли бакет пустым
+                    if result.is_ok() && bucket.size() == 0 {
+                        buckets.remove(index);
+                    }
+                    
+                    return result;
                 }
             }
         }
@@ -1111,16 +1118,31 @@ impl BucketController {
         }
 
         // Если нужно переместить вектор
-        if let (Some(vector), Some(_source_id)) = (vector_to_move, source_bucket_id) {
+        if let (Some(vector), Some(source_id)) = (vector_to_move, source_bucket_id) {
             // Добавляем вектор в новый бакет
             let new_bucket_id = lsh.hash(&vector.data);
             let target_bucket = self.get_or_create_bucket(new_bucket_id)?;
             
             // Добавляем вектор напрямую в новый бакет
             target_bucket.vectors_controller.add_vector(None, None, None, Some(vector))?;
+            
+            // Удаляем пустой бакет, если он остался без векторов
+            self.remove_empty_bucket(source_id);
         }
 
         Ok(())
+    }
+
+    /// Удаляет пустой бакет по ID
+    fn remove_empty_bucket(&mut self, bucket_id: u64) {
+        if let Some(ref mut buckets) = self.buckets {
+            if let Some(pos) = buckets.iter().position(|b| b.id == bucket_id) {
+                let bucket = &buckets[pos];
+                if bucket.size() == 0 {
+                    buckets.remove(pos);
+                }
+            }
+        }
     }
 
     /// Возвращает все векторы из всех бакетов для сохранения в файловую систему
@@ -1153,8 +1175,6 @@ impl BucketController {
                     for vector in vectors {
                         let vector_id = vector.hash_id();
                         if let Some(_raw_data) = storage_controller.read_vector_from_bucket(collection_name.clone(), bucket.id.to_string(), vector_id) {
-                            // Вектор уже загружен в память, но мы можем обновить его из файла если нужно
-                            // Пока что просто логируем успешную загрузку
                             println!("Вектор с ID {} загружен из бакета {} коллекции '{}'.", vector_id, bucket.id, collection_name);
                         }
                     }

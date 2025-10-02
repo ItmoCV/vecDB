@@ -615,3 +615,82 @@ fn test_vector_dimension_validation() {
     println!("Тест валидации размерности векторов завершен успешно!");
 }
 
+#[test]
+fn test_empty_bucket_removal_on_vector_update() {
+    use crate::core::controllers::BucketController;
+    use crate::core::lsh::LSHMetric;
+    use std::collections::HashMap;
+    
+    // Создаем BucketController
+    let mut bucket_controller = BucketController::new(4, 3, 1.0, LSHMetric::Euclidean, Some(42));
+    
+    // Добавляем вектор в первый бакет
+    let vector1 = vec![1.0, 2.0, 3.0, 4.0];
+    let metadata1 = HashMap::new();
+    let vector1_id = bucket_controller.add_vector(vector1.clone(), metadata1).unwrap();
+    
+    // Добавляем вектор во второй бакет (значительно отличается)
+    let vector2 = vec![10.0, 20.0, 30.0, 40.0];
+    let metadata2 = HashMap::new();
+    let vector2_id = bucket_controller.add_vector(vector2.clone(), metadata2).unwrap();
+    
+    // Проверяем, что у нас есть 2 бакета
+    let initial_bucket_count = bucket_controller.get_all_buckets().len();
+    assert_eq!(initial_bucket_count, 2, "Должно быть 2 бакета");
+    
+    // Обновляем первый вектор так, чтобы он попал во второй бакет
+    let new_vector1 = vec![10.1, 20.1, 30.1, 40.1]; // Очень похож на vector2
+    bucket_controller.update_vector(vector1_id, Some(new_vector1), None).unwrap();
+    
+    // Проверяем, что первый бакет был удален (так как стал пустым)
+    let final_bucket_count = bucket_controller.get_all_buckets().len();
+    assert_eq!(final_bucket_count, 1, "Должен остаться только 1 бакет");
+    
+    // Проверяем, что оба вектора теперь в одном бакете
+    let buckets = bucket_controller.get_all_buckets();
+    let bucket = buckets.first().unwrap();
+    assert!(bucket.contains_vector(vector1_id), "Первый вектор должен быть в оставшемся бакете");
+    assert!(bucket.contains_vector(vector2_id), "Второй вектор должен быть в том же бакете");
+    
+    println!("Тест удаления пустых бакетов при обновлении векторов завершен успешно!");
+}
+
+#[test]
+fn test_empty_bucket_removal_on_vector_deletion() {
+    use crate::core::controllers::BucketController;
+    use crate::core::lsh::LSHMetric;
+    use std::collections::HashMap;
+    
+    // Создаем BucketController
+    let mut bucket_controller = BucketController::new(4, 3, 1.0, LSHMetric::Euclidean, Some(42));
+    
+    // Добавляем вектор в первый бакет
+    let vector1 = vec![1.0, 2.0, 3.0, 4.0];
+    let metadata1 = HashMap::new();
+    let vector1_id = bucket_controller.add_vector(vector1.clone(), metadata1).unwrap();
+    
+    // Добавляем вектор во второй бакет
+    let vector2 = vec![10.0, 20.0, 30.0, 40.0];
+    let metadata2 = HashMap::new();
+    let vector2_id = bucket_controller.add_vector(vector2.clone(), metadata2).unwrap();
+    
+    // Проверяем, что у нас есть 2 бакета
+    let initial_bucket_count = bucket_controller.get_all_buckets().len();
+    assert_eq!(initial_bucket_count, 2, "Должно быть 2 бакета");
+    
+    // Удаляем первый вектор
+    bucket_controller.remove_vector(vector1_id).unwrap();
+    
+    // Проверяем, что первый бакет был удален (так как стал пустым)
+    let final_bucket_count = bucket_controller.get_all_buckets().len();
+    assert_eq!(final_bucket_count, 1, "Должен остаться только 1 бакет");
+    
+    // Проверяем, что второй вектор все еще существует
+    let remaining_buckets = bucket_controller.get_all_buckets();
+    let remaining_bucket = remaining_buckets.first().unwrap();
+    assert!(remaining_bucket.contains_vector(vector2_id), "Второй вектор должен остаться");
+    assert!(!remaining_bucket.contains_vector(vector1_id), "Первый вектор должен быть удален");
+    
+    println!("Тест удаления пустых бакетов при удалении векторов завершен успешно!");
+}
+
