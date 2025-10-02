@@ -152,23 +152,38 @@ fn filter_by_metadata_returns_only_matching_ids() {
 }
 
 #[test]
-fn find_most_similar_prefers_closest_vector() {
+fn find_most_similar_returns_k_vectors() {
     let mut controller = VectorController::new();
 
-    controller
+    let _id1 = controller
         .add_vector(embedding_for("hello"), metadata_with_category("greeting"))
         .expect("Не удалось добавить первый вектор");
 
-    controller
+    let _id2 = controller
         .add_vector(embedding_for("farewell"), metadata_with_category("farewell"))
         .expect("Не удалось добавить второй вектор");
 
-    let (index, score) = controller
-        .find_most_similar("hello")
-        .expect("Поиск похожего вектора должен завершиться успешно");
+    let _id3 = controller
+        .add_vector(embedding_for("hi"), metadata_with_category("greeting"))
+        .expect("Не удалось добавить третий вектор");
 
-    assert_eq!(index, 0);
-    assert!(score > 0.0);
+    let results = controller
+        .find_most_similar(&embedding_for("hello"), 2)
+        .expect("Поиск похожих векторов должен завершиться успешно");
+
+    assert_eq!(results.len(), 2);
+
+    let (first_index, first_score) = results[0];
+    let (second_index, second_score) = results[1];
+
+    assert!(first_index == 0);
+    assert!(second_index == 1);
+    assert_ne!(first_index, second_index);
+
+    assert!(first_score > 0.0);
+    assert!(second_score > 0.0);
+
+    assert!(first_score >= second_score);
 }
 
 #[test]

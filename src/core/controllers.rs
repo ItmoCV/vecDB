@@ -111,9 +111,9 @@ impl VectorController {
     }
 
     /// поиск наиболее похожего вектора
-    pub fn find_most_similar(&self, query: &str) -> Result<(usize, f32), Box<dyn std::error::Error>> {
+    pub fn find_most_similar(&self, query: &Vec<f32>, k: usize) -> Result<Vec<(usize, f32)>, Box<dyn std::error::Error>> {
         match &self.vectors {
-            Some(vectors) => find_most_similar(query, vectors),
+            Some(vectors) => find_most_similar(query, vectors, k),
             None => Err("Список векторов пуст.".into()),
         }
     }

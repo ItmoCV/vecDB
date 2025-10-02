@@ -1,7 +1,7 @@
 // src/main.rs
 use std::collections::HashMap;
 
-use crate::core::embeddings::make_embeddings;
+use crate::core::embeddings::{make_embeddings};
 use crate::core::controllers::VectorController;
 
 pub mod core;
@@ -114,10 +114,15 @@ fn main() {
         println!("Метаданные после удаления: {:?}", vector.metadata);
     }
 
-    // Поиск наиболее похожего вектора
-    match controller.find_most_similar("hello") {
-        Ok((index, score)) => {
-            println!("Наиболее похожий вектор по индексу {}: score = {}", index, score);
+    let embedding_for = make_embeddings("hello").expect("Не удалось создать эмбеддинг");
+    // Поиск наиболее похожих векторов (например, k = 1)
+    match controller.find_most_similar(&embedding_for, 1) {
+        Ok(results) => {
+            if let Some((index, score)) = results.first() {
+                println!("Наиболее похожий вектор по индексу {}: score = {}", index, score);
+            } else {
+                println!("Похожих векторов не найдено.");
+            }
         }
         Err(e) => eprintln!("Ошибка: {}", e),
     }

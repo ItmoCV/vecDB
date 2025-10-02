@@ -38,28 +38,25 @@ pub fn make_embeddings(
 }
 
 pub fn find_most_similar(
-    query: &str,
+    query: &Vec<f32>,
     vectors: &[Vector],
-) -> Result<(usize, f32), Box<dyn Error>> {
+    k: usize,
+) -> Result<Vec<(usize, f32)>, Box<dyn Error>> {
     if vectors.is_empty() {
-        return Err("Vector list is empty".into());
+        return Err("Список векторов пуст".into());
     }
 
-    // Кодируем запрос заранее
-    let query_embedding = make_embeddings(query)?;
+    let mut scored: Vec<(usize, f32)> = vectors
+        .iter()
+        .enumerate()
+        .map(|(i, vector)| (i, cosine_similarity(query, &vector.data)))
+        .collect();
 
-    let mut best_index = 0;
-    let mut best_score = f32::NEG_INFINITY;
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    for (i, vector) in vectors.iter().enumerate() {
-        let score = cosine_similarity(&query_embedding, &vector.data);
-        if score > best_score {
-            best_score = score;
-            best_index = i;
-        }
-    }
+    let top_k = scored.into_iter().take(k).collect();
 
-    Ok((best_index, best_score))
+    Ok(top_k)
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
