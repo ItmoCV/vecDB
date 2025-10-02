@@ -1,15 +1,10 @@
 // src/main.rs
 use std::collections::HashMap;
 
-use crate::core::embeddings::{make_embeddings};
+use crate::core::embeddings::make_embeddings;
 use crate::core::controllers::VectorController;
 
 pub mod core;
-
-// Функция для кодирования текста в эмбеддинг
-fn encode_text(text: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-    make_embeddings(text)
-}
 
 // Функция для создания метаданных
 fn create_metadata(category: &str, additional: Option<HashMap<String, String>>) -> HashMap<String, String> {
@@ -29,7 +24,7 @@ fn prepare_vector_data(
     category: &str,
     additional_meta: Option<HashMap<String, String>>,
 ) -> Result<(Vec<f32>, HashMap<String, String>), Box<dyn std::error::Error>> {
-    let embedding = encode_text(text)?;
+    let embedding = make_embeddings(text)?;
     let metadata = create_metadata(category, additional_meta);
     Ok((embedding, metadata))
 }

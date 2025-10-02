@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::cmp::Ordering::Equal;
 
-use crate::core::{objects::{Vector}};
+use crate::core::objects::Vector;
 
 #[cfg(not(test))]
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
