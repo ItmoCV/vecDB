@@ -1,5 +1,5 @@
 use std::{collections::HashMap, result::Result};
-use crate::core::{config::ConfigLoader, objects::{Collection, Vector}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}};
+use crate::core::{config::ConfigLoader, objects::{Collection, Vector, Bucket}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}, lsh::{LSH, LSHMetric}};
 use std::fs;
 use std::path::Path;
 use std::io::ErrorKind;
@@ -26,140 +26,12 @@ pub struct VectorController {
     pub vectors: Option<Vec<Vector>>,
 }
 
-impl VectorController {
-    pub fn new() -> Self {
-        VectorController { vectors: None }
-    }
-
-    /// добавляет объект вектора к базе
-    pub fn add_vector(
-        &mut self,
-        embedding: Vec<f32>,
-        metadata: HashMap<String, String>,
-    ) -> Result<u64, Box<dyn std::error::Error>> {
-        let timestamp = Utc::now().timestamp();
-        let vector = Vector::new(Some(embedding), Some(timestamp), Some(metadata));
-        let id = vector.hash_id();
-        match &mut self.vectors {
-            Some(vecs) => vecs.push(vector),
-            None => self.vectors = Some(vec![vector]),
-        }
-        Ok(id)
-    }
-
-    /// Удаляет вектор по id
-    pub fn remove_vector(&mut self, id: u64) -> Result<(), String> {
-        if let Some(ref mut vectors) = self.vectors {
-            if let Some(pos) = vectors.iter().position(|v| v.hash_id() == id) {
-                vectors.remove(pos);
-                Ok(())
-            } else {
-                Err(format!("Вектор с id {} не найден.", id))
-            }
-        } else {
-            Err("Список векторов пуст.".to_string())
-        }
-    }
-    
-    /// Обновляет эмбеддинг и метаданные по id
-    pub fn update_vector(
-        &mut self,
-        id: u64,
-        new_embedding: Option<Vec<f32>>,
-        new_metadata: Option<HashMap<String, String>>,
-    ) -> Result<(), String> {
-        if let Some(ref mut vectors) = self.vectors {
-            if let Some(v) = vectors.iter_mut().find(|v| v.hash_id() == id) {
-                if let Some(embedding) = new_embedding {
-                    v.data = embedding;
-                }
-                if let Some(metadata) = new_metadata {
-                    v.metadata = metadata;
-                }
-                return Ok(());
-            }
-        }
-        Err(format!("Вектор с id {} не найден.", id))
-    }
-
-    /// Добавляет метаданные к вектору по ID (объединяет с существующими)
-    pub fn add_metadata_to_vector(&mut self, id: u64, new_metadata: HashMap<String, String>) -> Result<(), String> {
-        if let Some(ref mut vectors) = self.vectors {
-            if let Some(v) = vectors.iter_mut().find(|v| v.hash_id() == id) {
-                v.metadata.extend(new_metadata);
-                Ok(())
-            } else {
-                Err(format!("Вектор с id {} не найден.", id))
-            }
-        } else {
-            Err("Список векторов пуст.".to_string())
-        }
-    }
-
-    /// Удаляет метаданные по ключу у вектора по ID
-    pub fn remove_metadata_from_vector(&mut self, id: u64, key: &str) -> Result<(), String> {
-        if let Some(ref mut vectors) = self.vectors {
-            if let Some(v) = vectors.iter_mut().find(|v| v.hash_id() == id) {
-                v.metadata.remove(key);
-                Ok(())
-            } else {
-                Err(format!("Вектор с id {} не найден.", id))
-            }
-        } else {
-            Err("Список векторов пуст.".to_string())
-        }
-    }
-
-    /// поиск наиболее похожего вектора
-    pub fn find_most_similar(&self, query: &Vec<f32>, k: usize) -> Result<Vec<(usize, f32)>, Box<dyn std::error::Error>> {
-        match &self.vectors {
-            Some(vectors) => find_most_similar(query, vectors, k),
-            None => Err("Список векторов пуст.".into()),
-        }
-    }
-
-    /// Получение вектора по порядковому индексу
-    pub fn get_vector(&self, index: usize) -> Option<&Vector> {
-        match &self.vectors {
-            Some(vectors) => vectors.get(index),
-            None => None,
-        }
-    }
-
-    /// Получение вектора по hash_id (u64)
-    pub fn get_vector_by_id(&self, id: u64) -> Option<&Vector> {
-        match &self.vectors {
-            Some(vectors) => vectors.iter().find(|v| v.hash_id() == id),
-            None => None,
-        }
-    }
-
-    // фильтрация по метаданным
-    pub fn filter_by_metadata(&self, filters: &HashMap<String, String>) -> Vec<u64> {
-        let mut result = Vec::new();
-        if let Some(ref vectors) = self.vectors {
-            for vector in vectors {
-                let mut matches = true;
-                for (key, value) in filters {
-                    if let Some(v) = vector.metadata.get(key) {
-                        if v != value {
-                            matches = false;
-                            break;
-                        }
-                    } else {
-                        matches = false;
-                        break;
-                    }
-                }
-                if matches {
-                    result.push(vector.hash_id());
-                }
-            }
-        }
-        result
-    }
+#[derive(Debug)]
+pub struct BucketController {
+    pub buckets: Option<Vec<Bucket>>,
+    pub lsh: Option<LSH>,
+    pub dimension: Option<usize>,
 }
-
 
 // Impl block
 
@@ -190,9 +62,29 @@ impl StorageController {
         self.save_to_file(format!("./storage/{}/vectors", collection_name), hash_id, raw_data)
     }
 
-    /// Сохраняет сырые данные метадаты по hash_id
-    pub fn save_metadata(&self, collection_name: String, raw_data: Vec<u8>, hash_id: u64) -> Result<(), std::io::Error> {
-        self.save_to_file(format!("./storage/{}/metadata", collection_name), hash_id, raw_data)
+    /// Сохраняет сырые данные бакета в папку бакета по пути /storage/collection_name/bucket_name/bucket.bin
+    pub fn save_bucket(&self, collection_name: String, bucket_name: String, raw_data: Vec<u8>) -> Result<(), std::io::Error> {
+        self.save_to_file(format!("./storage/{}/{}", collection_name, bucket_name), 0, raw_data) // Используем 0 как имя файла bucket.bin
+    }
+
+    /// Сохраняет вектор в папку бакета по пути /storage/collection_name/bucket_name/vectors/vector_name.bin
+    pub fn save_vector_to_bucket(&self, collection_name: String, bucket_name: String, vector_id: u64, raw_data: Vec<u8>) -> Result<(), std::io::Error> {
+        self.save_to_file(format!("./storage/{}/{}/vectors", collection_name, bucket_name), vector_id, raw_data)
+    }
+
+    /// Загружает вектор из папки бакета
+    pub fn read_vector_from_bucket(&self, collection_name: String, bucket_name: String, vector_id: u64) -> Option<Vec<u8>> {
+        let vector_path_bin = format!("./storage/{}/{}/vectors/{}.bin", collection_name, bucket_name, vector_id);
+        match fs::read(&vector_path_bin) {
+            Ok(data) => Some(data),
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    None
+                } else {
+                    panic!("Ошибка чтения файла вектора из бакета: {:?}", e);
+                }
+            }
+        }
     }
 
     /// Возвращает список имён всех коллекций (папок) в storage
@@ -395,6 +287,102 @@ impl StorageController {
             }
         }
     }
+
+    /// Читает все бакеты (файлы) из папки buckets коллекции и возвращает их содержимое в виде HashMap, где ключ — hash (u64), значение — Vec<u8>
+    pub fn read_all_buckets(&self, collection_name: String) -> HashMap<String, Vec<u8>> {
+        let collection_path = format!("./storage/{}", collection_name);
+        let path = Path::new(&collection_path);
+        let mut result = HashMap::new();
+
+        match fs::read_dir(path) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let entry_path = entry.path();
+                    if entry_path.is_dir() {
+                        if let Some(bucket_name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                            if bucket_name == "vectors" {
+                                continue;
+                            }
+                            
+                            let bucket_file_path = entry_path.join("0.bin");
+                            if let Ok(data) = fs::read(&bucket_file_path) {
+                                result.insert(bucket_name.to_string(), data);
+                            }
+                        }
+                    }
+                }
+                result
+            }
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    result
+                } else {
+                    panic!("Ошибка чтения директории коллекции: {:?}", e);
+                }
+            }
+        }
+    }
+
+    /// Возвращает вектор ID бакетов (String) по названию коллекции
+    pub fn get_all_buckets_names(&self, collection_name: String) -> Vec<String> {
+        let collection_path = format!("./storage/{}", collection_name);
+        let path = Path::new(&collection_path);
+
+        match fs::read_dir(path) {
+            Ok(entries) => entries.filter_map(|entry| {
+                entry.ok().and_then(|e| {
+                    let entry_path = e.path();
+                    if entry_path.is_dir() {
+                        if let Some(bucket_name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                            // Пропускаем папку vectors, если она есть на верхнем уровне
+                            if bucket_name == "vectors" {
+                                None
+                            } else {
+                                // Проверяем, что в папке есть файл 0.bin (bucket.bin)
+                                let bucket_file_path = entry_path.join("0.bin");
+                                if bucket_file_path.exists() {
+                                    // Проверяем, что имя папки является числом (ID бакета)
+                                    if bucket_name.parse::<u64>().is_ok() {
+                                        Some(bucket_name.to_string())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+            }).collect(),
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    Vec::new()
+                } else {
+                    panic!("Ошибка чтения директории коллекции: {:?}", e);
+                }
+            }
+        }
+    }
+
+    /// Читает конкретный бакет по имени коллекции и имени (или хэшу) бакета
+    pub fn read_bucket(&self, collection_name: String, bucket_name: String) -> Option<Vec<u8>> {
+        let bucket_path_bin = format!("./storage/{}/{}/0.bin", collection_name, bucket_name);
+        match fs::read(&bucket_path_bin) {
+            Ok(data) => Some(data),
+            Err(e) => {
+                if e.kind() == ErrorKind::NotFound {
+                    None
+                } else {
+                    panic!("Ошибка чтения файла бакета: {:?}", e);
+                }
+            }
+        }
+    }
 }
 
 //  ConnectionController impl
@@ -427,9 +415,9 @@ impl CollectionController {
     }
 
     /// Добавляет новую коллекцию с указанным именем
-    pub fn add_collection(&mut self, name: String) -> Result<(), &'static str> {
+    pub fn add_collection(&mut self, name: String, lsh_metric: LSHMetric, vector_dimension: usize) -> Result<(), &'static str> {
         let collections = self.collections.get_or_insert_with(Vec::new);
-        collections.push(Collection::new(Some(name)));
+        collections.push(Collection::new(Some(name), lsh_metric, vector_dimension));
         Ok(())
     }
 
@@ -453,6 +441,11 @@ impl CollectionController {
         self.collections.as_ref()?.iter().find(|c| c.name == name)
     }
 
+    /// Получает мутабельную ссылку на коллекцию по имени
+    pub fn get_collection_mut(&mut self, name: &str) -> Option<&mut Collection> {
+        self.collections.as_mut()?.iter_mut().find(|c| c.name == name)
+    }
+
     /// Добавляет вектор в коллекцию по имени коллекции
     pub fn add_vector(
         &mut self,
@@ -472,9 +465,14 @@ impl CollectionController {
             None => return Err("Коллекция с указанным именем не найдена"),
         };
 
-        match collection.vectors_controller.add_vector(embedding, metadata) {
+        // Проверяем размерность вектора
+        if embedding.len() != collection.vector_dimension {
+            return Err("Размерность вектора не соответствует размерности коллекции");
+        }
+
+        match collection.buckets_controller.add_vector(embedding, metadata) {
             Ok(id) => Ok(id),
-            Err(_) => Err("Ошибка при добавлении вектора"),
+            Err(_) => Err("Ошибка при добавлении вектора в LSH бакет"),
         }
     }
 
@@ -495,10 +493,28 @@ impl CollectionController {
             }
         }
 
-        for (vec_id, vec_raw_data) in collection.vectors_controller.dump() {
-            match self.storage_controller.save_vector(collection_name.clone(), vec_raw_data, vec_id) {
-                Ok(_) => println!("Вектор с hash_id {} успешно сохранён в коллекции '{}'.", vec_id, collection_name),
-                Err(e) => eprintln!("Ошибка сохранения вектора с hash_id {} в коллекции '{}': {:?}", vec_id, collection_name, e),
+        // Сохраняем бакеты
+        if let Some(ref buckets) = collection.buckets_controller.buckets {
+            for bucket in buckets {
+                match bucket.dump() {
+                    Ok((bucket_raw_data, _hash_id)) => {
+                        match self.storage_controller.save_bucket(collection_name.clone(), bucket.id.to_string(), bucket_raw_data) {
+                            Ok(_) => println!("Бакет {} успешно сохранён в коллекции '{}'.", bucket.id, collection_name),
+                            Err(e) => eprintln!("Ошибка сохранения бакета {} в коллекции '{}': {:?}", bucket.id, collection_name, e),
+                        }
+                    }
+                    Err(_) => {
+                        eprintln!("Ошибка сериализации бакета {}.", bucket.id);
+                    }
+                }
+            }
+        }
+
+        // Сохраняем векторы в соответствующие бакеты
+        for (bucket_id, vector_id, vector_raw_data) in collection.buckets_controller.dump_vectors() {
+            match self.storage_controller.save_vector_to_bucket(collection_name.clone(), bucket_id.to_string(), vector_id, vector_raw_data) {
+                Ok(_) => println!("Вектор с ID {} успешно сохранён в бакете {} коллекции '{}'.", vector_id, bucket_id, collection_name),
+                Err(e) => eprintln!("Ошибка сохранения вектора с ID {} в бакете {} коллекции '{}': {:?}", vector_id, bucket_id, collection_name, e),
             }
         }
     }
@@ -518,11 +534,23 @@ impl CollectionController {
     /// Загружает одну коллекцию по имени из storage
     pub fn load_one(&mut self, name: String) {
         if let Some(raw_collection) = self.storage_controller.read_collection(name.clone()) {
-            let mut collection = Collection::new(None);
+            let mut collection = Collection::new(None, LSHMetric::Euclidean, 384); // Временные значения, будут загружены из файла
             collection.load(raw_collection);
 
-            let raw_vector = self.storage_controller.read_all_vector(name.clone());
-            collection.vectors_controller.load(raw_vector);
+            // Загружаем бакеты
+            let raw_buckets = self.storage_controller.read_all_buckets(name.clone());
+            // Конвертируем HashMap<String, Vec<u8>> в HashMap<u64, Vec<u8>> для совместимости
+            let mut buckets_data: HashMap<u64, Vec<u8>> = HashMap::new();
+            for (bucket_name, data) in raw_buckets {
+                // Парсим ID бакета из имени
+                if let Ok(bucket_id) = bucket_name.parse::<u64>() {
+                    buckets_data.insert(bucket_id, data);
+                }
+            }
+            collection.buckets_controller.load(buckets_data);
+
+            // Загружаем векторы из бакетов
+            collection.buckets_controller.load_vectors_from_buckets(&self.storage_controller, name.clone());
 
             match &mut self.collections {
                 Some(collections) => {
@@ -555,9 +583,217 @@ impl CollectionController {
             println!("Коллекции не найдены в storage.");
         }
     }
+
+    /// Получает бакет по ID
+    pub fn get_bucket(&self, collection_name: &str, bucket_id: u64) -> Option<&Bucket> {
+        let collection = self.get_collection(collection_name)?;
+        collection.buckets_controller.get_bucket(bucket_id)
+    }
+
+    /// Получает все бакеты в коллекции
+    pub fn get_all_buckets(&self, collection_name: &str) -> Option<Vec<&Bucket>> {
+        let collection = self.get_collection(collection_name)?;
+        Some(collection.buckets_controller.get_all_buckets())
+    }
+
+    /// Обновляет вектор в коллекции, при необходимости перемещая его в другой бакет
+    pub fn update_vector(
+        &mut self,
+        collection_name: &str,
+        vector_id: u64,
+        new_embedding: Option<Vec<f32>>,
+        new_metadata: Option<HashMap<String, String>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let collection = self.get_collection_mut(collection_name)
+            .ok_or_else(|| format!("Коллекция '{}' не найдена", collection_name))?;
+        
+        // Проверяем размерность нового вектора, если он предоставлен
+        if let Some(ref embedding) = new_embedding {
+            if embedding.len() != collection.vector_dimension {
+                return Err(format!("Размерность вектора {} не соответствует размерности коллекции {}", 
+                    embedding.len(), collection.vector_dimension).into());
+            }
+        }
+        
+        collection.buckets_controller.update_vector(vector_id, new_embedding, new_metadata)
+    }
 }
 
 //  VectorController impl
+
+impl VectorController {
+    pub fn new() -> Self {
+        VectorController { vectors: None }
+    }
+
+    /// добавляет объект вектора к базе
+    /// 
+    /// Параметры:
+    /// - embedding: вектор эмбеддинга (обязательный для создания нового вектора)
+    /// - metadata: метаданные вектора (обязательные для создания нового вектора)
+    /// - vector_id: ID вектора (опциональный, если None - создается автоматически)
+    /// - vector: готовый объект вектора (опциональный, если Some - используется вместо создания нового)
+    /// 
+    /// Примеры использования:
+    /// - add_vector(Some(embedding), Some(metadata), None, None) - создать новый вектор
+    /// - add_vector(None, None, Some(id), Some(vector)) - добавить готовый вектор
+    /// - add_vector(Some(embedding), Some(metadata), Some(id), None) - создать вектор с заданным ID
+    pub fn add_vector(
+        &mut self,
+        embedding: Option<Vec<f32>>,
+        metadata: Option<HashMap<String, String>>,
+        vector_id: Option<u64>,
+        vector: Option<Vector>,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let final_vector = if let Some(v) = vector {
+            // Используем готовый объект вектора
+            v
+        } else {
+            // Создаем новый вектор
+            let timestamp = Utc::now().timestamp();
+            let mut new_vector = Vector::new(embedding, Some(timestamp), metadata);
+            
+            // Устанавливаем ID если указан
+            if let Some(id) = vector_id {
+                new_vector.set_hash_id(id);
+            }
+            
+            new_vector
+        };
+        
+        let id = final_vector.hash_id();
+        match &mut self.vectors {
+            Some(vecs) => vecs.push(final_vector),
+            None => self.vectors = Some(vec![final_vector]),
+        }
+        Ok(id)
+    }
+
+    /// Удаляет вектор по id
+    pub fn remove_vector(&mut self, id: u64) -> Result<(), String> {
+        if let Some(ref mut vectors) = self.vectors {
+            if let Some(pos) = vectors.iter().position(|v| v.hash_id() == id) {
+                vectors.remove(pos);
+                Ok(())
+            } else {
+                Err(format!("Вектор с id {} не найден.", id))
+            }
+        } else {
+            Err("Список векторов пуст.".to_string())
+        }
+    }
+
+    /// Удаляет вектор по id и возвращает его
+    pub fn remove_and_get_vector(&mut self, id: u64) -> Result<Vector, String> {
+        if let Some(ref mut vectors) = self.vectors {
+            if let Some(pos) = vectors.iter().position(|v| v.hash_id() == id) {
+                Ok(vectors.remove(pos))
+            } else {
+                Err(format!("Вектор с id {} не найден.", id))
+            }
+        } else {
+            Err("Список векторов пуст.".to_string())
+        }
+    }
+    
+    /// Обновляет эмбеддинг и метаданные по id
+    pub fn update_vector(
+        &mut self,
+        id: u64,
+        new_embedding: Option<Vec<f32>>,
+        new_metadata: Option<HashMap<String, String>>,
+    ) -> Result<(), String> {
+        if let Some(ref mut vectors) = self.vectors {
+            if let Some(v) = vectors.iter_mut().find(|v| v.hash_id() == id) {
+                if let Some(embedding) = new_embedding {
+                    v.data = embedding;
+                }
+                if let Some(metadata) = new_metadata {
+                    v.metadata = metadata;
+                }
+                return Ok(());
+            }
+        }
+        Err(format!("Вектор с id {} не найден.", id))
+    }
+
+    /// Добавляет метаданные к вектору по ID (объединяет с существующими)
+    pub fn add_metadata_to_vector(&mut self, id: u64, new_metadata: HashMap<String, String>) -> Result<(), String> {
+        if let Some(ref mut vectors) = self.vectors {
+            if let Some(v) = vectors.iter_mut().find(|v| v.hash_id() == id) {
+                v.metadata.extend(new_metadata);
+                Ok(())
+            } else {
+                Err(format!("Вектор с id {} не найден.", id))
+            }
+        } else {
+            Err("Список векторов пуст.".to_string())
+        }
+    }
+
+    /// Удаляет метаданные по ключу у вектора по ID
+    pub fn remove_metadata_from_vector(&mut self, id: u64, key: &str) -> Result<(), String> {
+        if let Some(ref mut vectors) = self.vectors {
+            if let Some(v) = vectors.iter_mut().find(|v| v.hash_id() == id) {
+                v.metadata.remove(key);
+                Ok(())
+            } else {
+                Err(format!("Вектор с id {} не найден.", id))
+            }
+        } else {
+            Err("Список векторов пуст.".to_string())
+        }
+    }
+
+    /// поиск наиболее похожего вектора
+    pub fn find_most_similar(&self, query: &Vec<f32>, k: usize) -> Result<Vec<(usize, f32)>, Box<dyn std::error::Error>> {
+        match &self.vectors {
+            Some(vectors) => find_most_similar(query, vectors, k),
+            None => Err("Список векторов пуст.".into()),
+        }
+    }
+
+    /// Получение вектора по порядковому индексу
+    pub fn get_vector(&self, index: usize) -> Option<&Vector> {
+        match &self.vectors {
+            Some(vectors) => vectors.get(index),
+            None => None,
+        }
+    }
+
+    /// Получение вектора по hash_id (u64)
+    pub fn get_vector_by_id(&self, id: u64) -> Option<&Vector> {
+        match &self.vectors {
+            Some(vectors) => vectors.iter().find(|v| v.hash_id() == id),
+            None => None,
+        }
+    }
+
+    // фильтрация по метаданным
+    pub fn filter_by_metadata(&self, filters: &HashMap<String, String>) -> Vec<u64> {
+        let mut result = Vec::new();
+        if let Some(ref vectors) = self.vectors {
+            for vector in vectors {
+                let mut matches = true;
+                for (key, value) in filters {
+                    if let Some(v) = vector.metadata.get(key) {
+                        if v != value {
+                            matches = false;
+                            break;
+                        }
+                    } else {
+                        matches = false;
+                        break;
+                    }
+                }
+                if matches {
+                    result.push(vector.hash_id());
+                }
+            }
+        }
+        result
+    }
+}
 
 impl CollectionObjectController for VectorController {
     /// Загружает векторы из HashMap<u64, Vec<u8>> (hash_id -> данные)
@@ -583,6 +819,374 @@ impl CollectionObjectController for VectorController {
                     }
                     Err(_) => {
                         eprintln!("Ошибка сериализации вектора.");
+                    }
+                }
+            }
+        }
+
+        ready_storage_data
+    }
+}
+
+//  BucketController impl
+
+impl BucketController {
+
+    /// Создаёт новый BucketController с LSH для автоматического создания бакетов
+    pub fn new(dimension: usize, num_hashes: usize, bucket_width: f32, metric: LSHMetric, seed: Option<u64>) -> Self {
+        let lsh = LSH::new(dimension, num_hashes, bucket_width, metric, seed);
+        BucketController {
+            buckets: None,
+            lsh: Some(lsh),
+            dimension: Some(dimension),
+        }
+    }
+
+    /// Получает бакет по ID
+    pub fn get_bucket(&self, id: u64) -> Option<&Bucket> {
+        match &self.buckets {
+            Some(buckets) => buckets.iter().find(|b| b.id == id),
+            None => None,
+        }
+    }
+
+    /// Получает мутабельную ссылку на бакет по ID
+    pub fn get_bucket_mut(&mut self, id: u64) -> Option<&mut Bucket> {
+        match &mut self.buckets {
+            Some(buckets) => buckets.iter_mut().find(|b| b.id == id),
+            None => None,
+        }
+    }
+
+    /// Добавляет вектор с автоматическим созданием бакета на основе LSH
+    pub fn add_vector(
+        &mut self,
+        embedding: Vec<f32>,
+        metadata: HashMap<String, String>,
+    ) -> Result<u64, Box<dyn std::error::Error>> {
+        let lsh = self.lsh.as_ref().ok_or("LSH не инициализирован. Используйте new для создания контроллера с LSH.")?;
+        let dimension = self.dimension.ok_or("Размерность не установлена")?;
+
+        if embedding.len() != dimension {
+            return Err(format!("Размерность вектора {} не соответствует ожидаемой {}", embedding.len(), dimension).into());
+        }
+
+        let bucket_hash = lsh.hash(&embedding);
+
+        let bucket = self.get_or_create_bucket(bucket_hash)?;
+
+        bucket.add_vector(embedding, metadata)
+    }
+
+    /// Получает или создает бакет
+    fn get_or_create_bucket(
+        &mut self,
+        bucket_id: u64,
+    ) -> Result<&mut Bucket, Box<dyn std::error::Error>> {
+        // Проверяем, существует ли бакет
+        let bucket_exists = if let Some(ref buckets) = self.buckets {
+            buckets.iter().any(|b| b.id == bucket_id)
+        } else {
+            false
+        };
+
+        if !bucket_exists {
+            // Бакет не существует, создаем новый
+            let bucket = Bucket::new(bucket_id);
+            match &mut self.buckets {
+                Some(buckets) => {
+                    buckets.push(bucket);
+                }
+                None => {
+                    self.buckets = Some(vec![bucket]);
+                }
+            }
+        }
+
+        // Теперь возвращаем ссылку на бакет
+        if let Some(ref mut buckets) = self.buckets {
+            Ok(buckets.iter_mut().find(|b| b.id == bucket_id).unwrap())
+        } else {
+            unreachable!()
+        }
+    }
+
+    /// Получает все бакеты
+    pub fn get_all_buckets(&self) -> Vec<&Bucket> {
+        match &self.buckets {
+            Some(buckets) => buckets.iter().collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Получает количество бакетов
+    pub fn count(&self) -> usize {
+        match &self.buckets {
+            Some(buckets) => buckets.len(),
+            None => 0,
+        }
+    }
+
+    /// Поиск похожих векторов с использованием LSH
+    pub fn find_similar(
+        &self,
+        query: &Vec<f32>,
+        k: usize,
+    ) -> Result<Vec<(u64, usize, f32)>, Box<dyn std::error::Error>> {
+        let lsh = self.lsh.as_ref().ok_or("LSH не инициализирован")?;
+        let dimension = self.dimension.ok_or("Размерность не установлена")?;
+
+        if query.len() != dimension {
+            return Err(format!("Размерность вектора {} не соответствует ожидаемой {}", query.len(), dimension).into());
+        }
+
+        let query_hash = lsh.hash(query);
+        
+        if let Some(ref buckets) = self.buckets {
+            if let Some(bucket) = buckets.iter().find(|b| b.hash_id() == query_hash) {
+                let results = bucket.find_similar(query, k)?;
+                return Ok(results.into_iter().map(|(idx, score)| (bucket.hash_id(), idx, score)).collect());
+            }
+        }
+
+        Ok(Vec::new())
+    }
+
+    /// Поиск похожих векторов в нескольких бакетах
+    pub fn find_similar_multi_bucket(
+        &self,
+        query: &Vec<f32>,
+        k: usize,
+    ) -> Result<Vec<(u64, usize, f32)>, Box<dyn std::error::Error>> {
+        let lsh = self.lsh.as_ref().ok_or("LSH не инициализирован")?;
+        let dimension = self.dimension.ok_or("Размерность не установлена")?;
+
+        if query.len() != dimension {
+            return Err(format!("Размерность вектора {} не соответствует ожидаемой {}", query.len(), dimension).into());
+        }
+
+        let mut all_results = Vec::new();
+
+        let query_hashes = lsh.multi_hash(query, 3);
+
+        if let Some(ref buckets) = self.buckets {
+            for hash in query_hashes {
+                if let Some(bucket) = buckets.iter().find(|b| b.hash_id() == hash) {
+                    let results = bucket.find_similar(query, k)?;
+                    for (idx, score) in results {
+                        all_results.push((bucket.hash_id(), idx, score));
+                    }
+                }
+            }
+        }
+
+        all_results.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        all_results.truncate(k);
+
+        Ok(all_results)
+    }
+
+    /// Получает общее количество векторов во всех бакетах
+    pub fn total_vectors(&self) -> usize {
+        match &self.buckets {
+            Some(buckets) => buckets.iter().map(|b| b.size()).sum(),
+            None => 0,
+        }
+    }
+
+    /// Удаляет вектор из соответствующего бакета
+    pub fn remove_vector(&mut self, vector_id: u64) -> Result<(), String> {
+        if let Some(ref mut buckets) = self.buckets {
+            for bucket in buckets.iter_mut() {
+                if bucket.contains_vector(vector_id) {
+                    return bucket.remove_vector(vector_id);
+                }
+            }
+        }
+        Err(format!("Вектор с id {} не найден ни в одном бакете", vector_id))
+    }
+
+    /// Получает вектор по ID из любого бакета
+    pub fn get_vector(&self, vector_id: u64) -> Option<&Vector> {
+        if let Some(ref buckets) = self.buckets {
+            for bucket in buckets {
+                if let Some(vector) = bucket.get_vector(vector_id) {
+                    return Some(vector);
+                }
+            }
+        }
+        None
+    }
+
+    /// Фильтрация векторов по метаданным во всех бакетах
+    pub fn filter_by_metadata(&self, filters: &HashMap<String, String>) -> Vec<u64> {
+        let mut result = Vec::new();
+        if let Some(ref buckets) = self.buckets {
+            for bucket in buckets {
+                result.extend(bucket.filter_by_metadata(filters));
+            }
+        }
+        result
+    }
+
+    /// Получает статистику по бакетам
+    pub fn get_statistics(&self) -> HashMap<String, String> {
+        let mut stats = HashMap::new();
+        stats.insert("total_buckets".to_string(), self.count().to_string());
+        stats.insert("total_vectors".to_string(), self.total_vectors().to_string());
+        
+        if let Some(dimension) = self.dimension {
+            stats.insert("dimension".to_string(), dimension.to_string());
+        }
+        
+        if let Some(ref lsh) = self.lsh {
+            stats.insert("num_hashes".to_string(), lsh.num_hashes.to_string());
+            stats.insert("bucket_width".to_string(), lsh.bucket_width.to_string());
+        }
+        
+        if let Some(ref buckets) = self.buckets {
+            let avg_vectors = if buckets.is_empty() { 0.0 } else { self.total_vectors() as f32 / buckets.len() as f32 };
+            stats.insert("avg_vectors_per_bucket".to_string(), format!("{:.2}", avg_vectors));
+        }
+        
+        stats
+    }
+
+    /// Обновляет вектор, при необходимости перемещая его в другой бакет
+    pub fn update_vector(
+        &mut self,
+        vector_id: u64,
+        new_embedding: Option<Vec<f32>>,
+        new_metadata: Option<HashMap<String, String>>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let lsh = self.lsh.as_ref().ok_or("LSH не инициализирован")?;
+        let dimension = self.dimension.ok_or("Размерность не установлена")?;
+
+        // Находим вектор в текущем бакете и извлекаем его
+        let mut vector_to_move: Option<Vector> = None;
+        let mut source_bucket_id: Option<u64> = None;
+
+        if let Some(ref mut buckets) = self.buckets {
+            for bucket in buckets.iter_mut() {
+                if let Some(vector) = bucket.get_vector(vector_id) {
+                    // Создаем временную копию для проверки нового хэша
+                    let mut temp_vector = vector.clone();
+                    
+                    // Обновляем данные временного вектора
+                    if let Some(embedding) = new_embedding.clone() {
+                        if embedding.len() != dimension {
+                            return Err(format!("Размерность вектора {} не соответствует ожидаемой {}", embedding.len(), dimension).into());
+                        }
+                        temp_vector.data = embedding;
+                    }
+                    if let Some(metadata) = new_metadata.clone() {
+                        temp_vector.metadata = metadata;
+                    }
+
+                    // Вычисляем новый LSH хэш
+                    let new_bucket_id = lsh.hash(&temp_vector.data);
+                    
+                    // Если хэш изменился, нужно переместить вектор
+                    if bucket.id != new_bucket_id {
+                        // Извлекаем вектор из старого бакета
+                        vector_to_move = Some(bucket.remove_and_get_vector(vector_id)?);
+                        source_bucket_id = Some(bucket.id);
+                        
+                        // Обновляем данные извлеченного вектора
+                        if let Some(ref mut vector) = vector_to_move {
+                            if let Some(embedding) = new_embedding {
+                                vector.data = embedding;
+                            }
+                            if let Some(metadata) = new_metadata {
+                                vector.metadata = metadata;
+                            }
+                        }
+                    } else {
+                        // Хэш не изменился, просто обновляем вектор в текущем бакете
+                        return bucket.update_vector(vector_id, new_embedding, new_metadata);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Если нужно переместить вектор
+        if let (Some(vector), Some(_source_id)) = (vector_to_move, source_bucket_id) {
+            // Добавляем вектор в новый бакет
+            let new_bucket_id = lsh.hash(&vector.data);
+            let target_bucket = self.get_or_create_bucket(new_bucket_id)?;
+            
+            // Добавляем вектор напрямую в новый бакет
+            target_bucket.vectors_controller.add_vector(None, None, None, Some(vector))?;
+        }
+
+        Ok(())
+    }
+
+    /// Возвращает все векторы из всех бакетов для сохранения в файловую систему
+    pub fn dump_vectors(&self) -> Vec<(u64, u64, Vec<u8>)> {
+        let mut vectors_data = Vec::new();
+        if let Some(ref buckets) = self.buckets {
+            for bucket in buckets {
+                if let Some(ref vectors) = bucket.vectors_controller.vectors {
+                    for vector in vectors {
+                        match vector.dump() {
+                            Ok((raw_data, vector_id)) => {
+                                vectors_data.push((bucket.id, vector_id, raw_data));
+                            }
+                            Err(_) => {
+                                eprintln!("Ошибка сериализации вектора с ID {}.", vector.hash_id());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        vectors_data
+    }
+
+    /// Загружает векторы из бакетов из файловой системы
+    pub fn load_vectors_from_buckets(&mut self, storage_controller: &StorageController, collection_name: String) {
+        if let Some(ref mut buckets) = self.buckets {
+            for bucket in buckets.iter_mut() {
+                if let Some(ref vectors) = bucket.vectors_controller.vectors {
+                    for vector in vectors {
+                        let vector_id = vector.hash_id();
+                        if let Some(_raw_data) = storage_controller.read_vector_from_bucket(collection_name.clone(), bucket.id.to_string(), vector_id) {
+                            // Вектор уже загружен в память, но мы можем обновить его из файла если нужно
+                            // Пока что просто логируем успешную загрузку
+                            println!("Вектор с ID {} загружен из бакета {} коллекции '{}'.", vector_id, bucket.id, collection_name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl CollectionObjectController for BucketController {
+    /// Загружает бакеты из HashMap<u64, Vec<u8>> (bucket_id -> данные)
+    fn load(&mut self, raw_data: HashMap<u64, Vec<u8>>) {
+        let mut buckets = Vec::new();
+        for (bucket_id, data) in raw_data {
+            let mut bucket = Bucket::new(bucket_id);
+            bucket.load(data);
+            buckets.push(bucket);
+        }
+        self.buckets = Some(buckets);
+    }
+
+    /// Сохраняет бакеты в HashMap<u64, Vec<u8>> (hash_id -> данные)
+    fn dump(&self) -> HashMap<u64, Vec<u8>> {
+        let mut ready_storage_data: HashMap<u64, Vec<u8>> = HashMap::new();
+        if let Some(ref buckets) = self.buckets {
+            for bucket in buckets {
+                match bucket.dump() {
+                    Ok((raw_bucket, hash_id)) => {
+                        ready_storage_data.insert(hash_id, raw_bucket);
+                    }
+                    Err(_) => {
+                        eprintln!("Ошибка сериализации бакета.");
                     }
                 }
             }

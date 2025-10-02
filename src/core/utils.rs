@@ -1,6 +1,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::collections::HashMap;
 use crate::core::objects::{Vector};
+use crate::core::lsh::LSHMetric;
 use serde::{Serialize, Deserialize};
 
 // util types
@@ -21,7 +22,16 @@ pub struct StorageVector {
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct StorageCollection {
     pub name: String,
-    pub hash_id: u64,
+    pub id: u64,
+    pub lsh_metric: String, // Сохраняем как строку для сериализации
+    pub vector_dimension: usize,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+pub struct StorageBucket {
+    pub id: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 // utils func
