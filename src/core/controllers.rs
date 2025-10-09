@@ -1,4 +1,10 @@
 use std::{collections::HashMap, result::Result};
+use axum::{routing::{get, post}, Router, extract::State, Json};
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use crate::core::{config::ConfigLoader, objects::{Collection, Vector, Bucket}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}, lsh::{LSH, LSHMetric}};
 use std::fs;
 use std::path::Path;
@@ -395,14 +401,103 @@ impl ConnectionController {
         ConnectionController { storage_controller: storage_controller, configs: config_loader.get(names) }
     }
 
-    /// Обработчик соединения (заглушка)
-    pub fn connection_handler(&mut self) {
+    /// Запускает HTTP RPC-сервер на указанном адресе. Нужен общий доступ к CollectionController.
+    pub async fn connection_handler(&mut self, controller: Arc<RwLock<CollectionController>>, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let app_state = AppState { controller, configs: self.configs.clone() };
 
+        let app = Router::new()
+            .route("/health", get(health))
+            .route("/query", post(rpc_query))
+            .with_state(app_state);
+
+        let listener = TcpListener::bind(addr).await?;
+        axum::serve(listener, app).await?;
+        Ok(())
     }
 
-    /// Обработчик запросов (заглушка)
-    pub fn query_handler(&self) -> Result<(), &'static str> {
-        Ok(())
+    /// Синхронный вызов для локного использования без HTTP
+    pub fn query_handler(&self) -> Result<(), &'static str> { Ok(()) }
+}
+
+#[derive(Clone)]
+struct AppState {
+    controller: Arc<RwLock<CollectionController>>,
+    configs: HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct RpcQuery {
+    action: String,
+    payload: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct RpcResponse<T> {
+    status: String,
+    data: Option<T>,
+    message: Option<String>,
+}
+
+async fn health() -> Json<RpcResponse<String>> {
+    Json(RpcResponse { status: "ok".to_string(), data: Some("healthy".to_string()), message: None })
+}
+
+#[derive(Deserialize)]
+struct AddCollectionParams {
+    name: String,
+    metric: String,
+    dimension: usize,
+}
+
+#[derive(Deserialize)]
+struct AddVectorParams {
+    collection: String,
+    embedding: Vec<f32>,
+    metadata: Option<HashMap<String, String>>,
+}
+
+async fn rpc_query(State(state): State<AppState>, Json(req): Json<RpcQuery>) -> Json<RpcResponse<serde_json::Value>> {
+    match req.action.as_str() {
+        "add_collection" => {
+            let parsed: Result<AddCollectionParams, _> = serde_json::from_value(req.payload.unwrap_or_default());
+            match parsed {
+                Ok(p) => {
+                    let metric = LSHMetric::from_string(&p.metric).unwrap_or(LSHMetric::Euclidean);
+                    let mut ctrl = state.controller.write().await;
+                    match ctrl.add_collection(p.name, metric, p.dimension) {
+                        Ok(_) => Json(RpcResponse { status: "ok".to_string(), data: Some(serde_json::json!({"added": true})), message: None }),
+                        Err(e) => Json(RpcResponse { status: "error".to_string(), data: None, message: Some(e.to_string()) }),
+                    }
+                }
+                Err(e) => Json(RpcResponse { status: "error".to_string(), data: None, message: Some(format!("bad payload: {}", e)) }),
+            }
+        }
+        "add_vector" => {
+            let parsed: Result<AddVectorParams, _> = serde_json::from_value(req.payload.unwrap_or_default());
+            match parsed {
+                Ok(p) => {
+                    let mut ctrl = state.controller.write().await;
+                    match ctrl.add_vector(&p.collection, p.embedding, p.metadata.unwrap_or_default()) {
+                        Ok(id) => Json(RpcResponse { status: "ok".to_string(), data: Some(serde_json::json!({"id": id})), message: None }),
+                        Err(e) => Json(RpcResponse { status: "error".to_string(), data: None, message: Some(e.to_string()) }),
+                    }
+                }
+                Err(e) => Json(RpcResponse { status: "error".to_string(), data: None, message: Some(format!("bad payload: {}", e)) }),
+            }
+        }
+        "dump" => {
+            let ctrl = state.controller.read().await;
+            ctrl.dump();
+            Json(RpcResponse { status: "ok".to_string(), data: Some(serde_json::json!({"dumped": true})), message: None })
+        }
+        "load" => {
+            let mut ctrl = state.controller.write().await;
+            ctrl.load();
+            Json(RpcResponse { status: "ok".to_string(), data: Some(serde_json::json!({"loaded": true})), message: None })
+        }
+        other => {
+            Json(RpcResponse { status: "error".to_string(), data: None, message: Some(format!("unknown action: {}", other)) })
+        }
     }
 }
 
