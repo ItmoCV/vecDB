@@ -10,13 +10,16 @@ pub struct VectorDB {
 }
 
 impl VectorDB {
-    pub fn new(configs: Option<HashMap<String, String>>) -> Self {
-        let storage_controller = StorageController::new(configs.unwrap_or_default());
-        let config_loader = ConfigLoader::new();
-        let connection_controller = ConnectionController::new(storage_controller, config_loader);
+    pub fn new(path: String) -> Self {
+        let mut config_loader = ConfigLoader::new();
+        config_loader.load(path);
 
-        let storage_for_collections = StorageController::new(HashMap::new());
-        let collection_controller = CollectionController::new(storage_for_collections);
+        let connection_config = config_loader.get(vec!["connection".to_string()]);
+        let storage_config = config_loader.get(vec!["storage".to_string()]);
+        let storage_controller = StorageController::new(storage_config);
+
+        let connection_controller = ConnectionController::new(connection_config);
+        let collection_controller = CollectionController::new(storage_controller);
 
         VectorDB { collection_controller, connection_controller }
     }
@@ -40,6 +43,8 @@ impl VectorDB {
     pub fn update_vector(&mut self, collection_name: &str, vector_id: u64, new_embedding: Option<Vec<f32>>, new_metadata: Option<HashMap<String, String>>) -> Result<(), Box<dyn std::error::Error>> {
         self.collection_controller.update_vector(collection_name, vector_id, new_embedding, new_metadata)
     }
+
+    // поиск векторов по заданному вектору
 
     /// Сохраняет все коллекции на диск
     pub fn dump(&self) {
