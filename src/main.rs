@@ -1,6 +1,6 @@
 // src/main.rs
 use std::collections::HashMap;
-
+use std::env;
 use crate::core::embeddings::make_embeddings;
 use crate::core::vector_db::VectorDB;
 use crate::core::lsh::LSHMetric;
@@ -21,40 +21,50 @@ fn create_metadata(category: &str, additional: Option<HashMap<String, String>>) 
 
 fn main() {
     println!("=== Демонстрация работы с VectorDB ===");
-    
-    // Создаем VectorDB
-    let mut db = VectorDB::new(None);
-    
+
+    // Извлекаем путь до конфига из аргументов командной строки
+    let args: Vec<String> = env::args().collect();
+    let config_path = if args.len() > 1 {
+        args[1].clone()
+    } else {
+        println!("Путь до конфига должен быть передан как первый аргумент командной строки.");
+        println!("Пример запуска: cargo run -- path/to/config.json");
+        std::process::exit(1);
+    };
+
+    // Создаем VectorDB, передав путь до конфиг файла
+    let mut db = VectorDB::new(config_path);
+
     // Создаем коллекцию с метрикой Euclidean и размерностью векторов 384
     let collection_name = "my_documents".to_string();
     let vector_dimension = 384; // Размерность эмбеддингов
     db.add_collection(collection_name.clone(), LSHMetric::Euclidean, vector_dimension).unwrap();
     println!("Создана коллекция: {} с размерностью векторов: {}", collection_name, vector_dimension);
-    
+
     // Подготавливаем текстовые векторы
     let texts = vec![
         "Привет, мир!",
         "Добро пожаловать в векторную базу данных",
         "Это демонстрация работы с коллекциями"
     ];
-    
+
     let mut vector_ids = Vec::new();
-    
+
     // Добавляем векторы в коллекцию
     for (i, text) in texts.iter().enumerate() {
         let embedding = make_embeddings(text).expect("Не удалось создать эмбеддинг");
         let metadata = create_metadata("document", None);
-        
+
         let id = db.add_vector(&collection_name, embedding, metadata).unwrap();
         vector_ids.push(id);
         println!("Добавлен вектор {} с ID: {}", i + 1, id);
     }
-    
+
     println!("Всего добавлено {} векторов в коллекцию '{}'", vector_ids.len(), collection_name);
-    
+
     // Сохраняем все коллекции
     db.dump();
     println!("Коллекции успешно сохранены!");
-    
+
     println!("\nДемонстрация завершена успешно!");
 }
