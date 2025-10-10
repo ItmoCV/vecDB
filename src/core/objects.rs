@@ -172,6 +172,10 @@ impl Collection {
             vector_dimension
         }
     }
+
+    pub fn find_similar(&self, query: &Vec<f32> , k: usize) -> Result<Vec<(u64, usize, f32)>, Box<dyn std::error::Error>> {
+        self.buckets_controller.find_similar(query, k)
+    }
 }
 
 //  Bucket impl

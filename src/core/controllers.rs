@@ -712,6 +712,22 @@ impl CollectionController {
         
         collection.buckets_controller.update_vector(vector_id, new_embedding, new_metadata)
     }
+
+    pub fn find_similar(
+        &self, 
+        collection_name: String, 
+        query: &Vec<f32>, 
+        k: usize
+    ) -> Result<Vec<(u64, usize, f32)>, Box<dyn std::error::Error>> {
+        let collection = self.get_collection(&collection_name);
+        match collection {
+            Some(current) => {
+                // Проверяем размерность запроса
+                current.find_similar(query, k)
+            }
+            None => Err(format!("Коллекция '{}' не найдена", collection_name).into())
+        }
+    }
 }
 
 //  VectorController impl
