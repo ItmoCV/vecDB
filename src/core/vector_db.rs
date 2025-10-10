@@ -14,9 +14,10 @@ impl VectorDB {
         let mut config_loader = ConfigLoader::new();
         config_loader.load(path);
 
-        let connection_config = config_loader.get(vec!["connection".to_string()]);
-        let storage_config = config_loader.get(vec!["storage".to_string()]);
+        let connection_config = config_loader.get("connection");
+        let storage_config = config_loader.get("storage");
         let storage_controller = StorageController::new(storage_config);
+        
 
         let connection_controller = ConnectionController::new(connection_config);
         let collection_controller = CollectionController::new(storage_controller);
