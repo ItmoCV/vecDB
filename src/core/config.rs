@@ -27,4 +27,9 @@ impl ConfigLoader {
             None => HashMap::new(),
         }
     }
+
+    pub fn load(&mut self, path: String) {
+        // TODO: load from json
+        // self.configs = load from json
+    }
 }

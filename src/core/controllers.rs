@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::core::{config::ConfigLoader, objects::{Collection, Vector, Bucket}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}, lsh::{LSH, LSHMetric}};
+use crate::core::{objects::{Collection, Vector, Bucket}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}, lsh::{LSH, LSHMetric}};
 use std::fs;
 use std::path::Path;
 use std::io::ErrorKind;
@@ -18,7 +18,7 @@ pub struct StorageController {
 }
 
 pub struct ConnectionController {
-    storage_controller: StorageController,
+    // storage_controller: StorageController,
     configs: HashMap<String, String>,
 }
 
@@ -399,10 +399,8 @@ impl StorageController {
 
 impl ConnectionController {
     /// Создаёт новый ConnectionController с заданным StorageController и ConfigLoader
-    pub fn new(storage_controller : StorageController, config_loader : ConfigLoader) -> ConnectionController {
-        let names = Vec::new();
-
-        ConnectionController { storage_controller: storage_controller, configs: config_loader.get(names) }
+    pub fn new(configs: HashMap<String, String>) -> ConnectionController {
+        ConnectionController { configs: configs }
     }
 
     /// Запускает HTTP RPC-сервер на указанном адресе. Нужен общий доступ к CollectionController.
