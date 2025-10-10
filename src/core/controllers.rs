@@ -46,7 +46,7 @@ pub struct BucketController {
 impl StorageController {
     /// Создаёт новый контроллер хранилища, инициализирует папку storage, если её нет
     pub fn new(configs: HashMap<String, String>) -> StorageController {
-        fs::create_dir_all("storage")
+        fs::create_dir_all(format!("{}/storage", configs.get(&"path".to_string()).unwrap_or(&".".to_string())))
             .expect("Не удалось создать папку storage");
         StorageController { configs }
     }
@@ -60,27 +60,27 @@ impl StorageController {
 
     /// Сохраняет сырые данные коллекции по hash_id
     pub fn save_collection(&self, collection_name: String, raw_data: Vec<u8>, hash_id: u64) -> Result<(), std::io::Error> {
-        self.save_to_file(format!("./storage/{}", collection_name), hash_id, raw_data)
+        self.save_to_file(format!("{}/storage/{}", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name), hash_id, raw_data)
     }
 
     /// Сохраняет сырые данные вектора по hash_id
     pub fn save_vector(&self, collection_name: String, raw_data: Vec<u8>, hash_id: u64) -> Result<(), std::io::Error> {
-        self.save_to_file(format!("./storage/{}/vectors", collection_name), hash_id, raw_data)
+        self.save_to_file(format!("{}/storage/{}/vectors", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name), hash_id, raw_data)
     }
 
     /// Сохраняет сырые данные бакета в папку бакета по пути /storage/collection_name/bucket_name/bucket.bin
     pub fn save_bucket(&self, collection_name: String, bucket_name: String, raw_data: Vec<u8>) -> Result<(), std::io::Error> {
-        self.save_to_file(format!("./storage/{}/{}", collection_name, bucket_name), 0, raw_data) // Используем 0 как имя файла bucket.bin
+        self.save_to_file(format!("{}/storage/{}/{}", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name, bucket_name), 0, raw_data) // Используем 0 как имя файла bucket.bin
     }
 
     /// Сохраняет вектор в папку бакета по пути /storage/collection_name/bucket_name/vectors/vector_name.bin
     pub fn save_vector_to_bucket(&self, collection_name: String, bucket_name: String, vector_id: u64, raw_data: Vec<u8>) -> Result<(), std::io::Error> {
-        self.save_to_file(format!("./storage/{}/{}/vectors", collection_name, bucket_name), vector_id, raw_data)
+        self.save_to_file(format!("{}/storage/{}/{}/vectors", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name, bucket_name), vector_id, raw_data)
     }
 
     /// Загружает вектор из папки бакета
     pub fn read_vector_from_bucket(&self, collection_name: String, bucket_name: String, vector_id: u64) -> Option<Vec<u8>> {
-        let vector_path_bin = format!("./storage/{}/{}/vectors/{}.bin", collection_name, bucket_name, vector_id);
+        let vector_path_bin = format!("{}/storage/{}/{}/vectors/{}.bin", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name, bucket_name, vector_id);
         match fs::read(&vector_path_bin) {
             Ok(data) => Some(data),
             Err(e) => {
@@ -95,17 +95,21 @@ impl StorageController {
 
     /// Возвращает список имён всех коллекций (папок) в storage
     pub fn get_all_collections_name(&self) -> Vec<String> {
-        let path = Path::new("./storage");
+        let storage_path = format!("{}/storage", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()));
+        let path = Path::new(&storage_path);
         match fs::read_dir(path) {
             Ok(entries) => entries.filter_map(|entry| {
-                entry.ok().and_then(|e| {
-                    let path = e.path();
-                    if path.is_dir() {
-                        path.file_name().and_then(|n| n.to_str().map(|s| s.to_string()))
-                    } else {
-                        None
+                if let Ok(e) = entry {
+                    let entry_path = e.path();
+                    if entry_path.is_dir() {
+                        if let Some(fname) = entry_path.file_name() {
+                            if let Some(name) = fname.to_str() {
+                                return Some(name.to_string());
+                            }
+                        }
                     }
-                })
+                }
+                None
             }).collect(),
             Err(_) => Vec::new(),
         }
@@ -113,7 +117,7 @@ impl StorageController {
 
     /// Читает сырые данные коллекции (первый найденный файл в папке коллекции)
     pub fn read_collection(&self, collection_name: String) -> Option<Vec<u8>> {
-        let col_path = format!("./storage/{}", collection_name);
+        let col_path = format!("{}/storage/{}", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name);
         let path = Path::new(&col_path);
 
         match fs::read_dir(path) {
@@ -140,7 +144,7 @@ impl StorageController {
 
     /// Читает все векторы (файлы) из папки vectors коллекции и возвращает их содержимое в виде HashMap, где ключ — hash (u64), значение — Vec<u8>
     pub fn read_all_vector(&self, collection_name: String) -> HashMap<u64, Vec<u8>> {
-        let vector_path = format!("./storage/{}/vectors", collection_name);
+        let vector_path = format!("{}/storage/{}/vectors", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name);
         let path = Path::new(&vector_path);
         let mut result = HashMap::new();
 
@@ -174,7 +178,7 @@ impl StorageController {
 
     /// Возвращает вектор хэшей (u64) файлов векторов по названию коллекции (имя файла соответствует хэшу)
     pub fn get_all_vectors_names(&self, collection_name: String) -> Vec<u64> {
-        let vector_path = format!("./storage/{}/vectors", collection_name);
+        let vector_path = format!("{}/storage/{}/vectors", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name);
         let path = Path::new(&vector_path);
 
         match fs::read_dir(path) {
@@ -203,7 +207,7 @@ impl StorageController {
 
     /// Читает конкретный вектор по имени коллекции и имени (или хэшу) вектора
     pub fn read_vector(&self, collection_name: String, vector_hash: u64) -> Option<Vec<u8>> {
-        let vector_path_bin = format!("./storage/{}/vectors/{}.bin", collection_name, vector_hash);
+        let vector_path_bin = format!("{}/storage/{}/vectors/{}.bin", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name, vector_hash);
         match fs::read(&vector_path_bin) {
             Ok(data) => Some(data),
             Err(e) => {
@@ -218,7 +222,7 @@ impl StorageController {
 
     /// Читает все файлы метадаты из папки metadata внутри коллекции и возвращает их содержимое в виде HashMap<u64, Vec<u8>>, где ключ - hash (имя файла без расширения)
     pub fn read_all_metadata(&self, collection_name: String) -> HashMap<u64, Vec<u8>> {
-        let metadata_path = format!("./storage/{}/metadata", collection_name);
+        let metadata_path = format!("{}/storage/{}/metadata", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name);
         let path = Path::new(&metadata_path);
 
         match fs::read_dir(path) {
@@ -252,7 +256,7 @@ impl StorageController {
 
     /// Возвращает вектор имён файлов метадаты по названию коллекции (без расширения .bin) в виде Vec<u64>
     pub fn get_all_metadata_names(&self, collection_name: String) -> Vec<u64> {
-        let metadata_path = format!("./storage/{}/metadata", collection_name);
+        let metadata_path = format!("{}/storage/{}/metadata", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name);
         let path = Path::new(&metadata_path);
 
         match fs::read_dir(path) {
@@ -281,7 +285,7 @@ impl StorageController {
 
     /// Читает конкретный файл метадаты по имени коллекции и имени файла метадаты (без расширения)
     pub fn read_metadata(&self, collection_name: String, metadata_hash: u64) -> Option<Vec<u8>> {
-        let metadata_path_bin = format!("./storage/{}/metadata/{}.bin", collection_name, metadata_hash);
+        let metadata_path_bin = format!("{}/storage/{}/metadata/{}.bin", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name, metadata_hash);
         match fs::read(&metadata_path_bin) {
             Ok(data) => Some(data),
             Err(e) => {
@@ -296,7 +300,7 @@ impl StorageController {
 
     /// Читает все бакеты (файлы) из папки buckets коллекции и возвращает их содержимое в виде HashMap, где ключ — hash (u64), значение — Vec<u8>
     pub fn read_all_buckets(&self, collection_name: String) -> HashMap<String, Vec<u8>> {
-        let collection_path = format!("./storage/{}", collection_name);
+        let collection_path = format!("{}/storage/{}", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name);
         let path = Path::new(&collection_path);
         let mut result = HashMap::new();
 
@@ -331,7 +335,7 @@ impl StorageController {
 
     /// Возвращает вектор ID бакетов (String) по названию коллекции
     pub fn get_all_buckets_names(&self, collection_name: String) -> Vec<String> {
-        let collection_path = format!("./storage/{}", collection_name);
+        let collection_path = format!("{}/storage/{}", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name);
         let path = Path::new(&collection_path);
 
         match fs::read_dir(path) {
@@ -377,7 +381,7 @@ impl StorageController {
 
     /// Читает конкретный бакет по имени коллекции и имени (или хэшу) бакета
     pub fn read_bucket(&self, collection_name: String, bucket_name: String) -> Option<Vec<u8>> {
-        let bucket_path_bin = format!("./storage/{}/{}/0.bin", collection_name, bucket_name);
+        let bucket_path_bin = format!("{}/storage/{}/{}/0.bin", self.configs.get(&"path".to_string()).unwrap_or(&".".to_string()), collection_name, bucket_name);
         match fs::read(&bucket_path_bin) {
             Ok(data) => Some(data),
             Err(e) => {
