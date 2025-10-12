@@ -5,11 +5,13 @@ use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::core::{objects::{Collection, Vector, Bucket}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}, lsh::{LSH, LSHMetric}};
+use tokio::sync::broadcast;
+use crate::core::{objects::{Collection, Vector, Bucket}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}, lsh::{LSH, LSHMetric}, config::ConfigLoader};
 use std::fs;
 use std::path::Path;
 use std::io::ErrorKind;
 use chrono::Utc;
+use utoipa_swagger_ui::SwaggerUi;
 
 // structs define
 
@@ -18,12 +20,12 @@ pub struct StorageController {
 }
 
 pub struct ConnectionController {
-    // storage_controller: StorageController,
+    storage_controller: Arc<StorageController>,
     configs: HashMap<String, String>,
 }
 
 pub struct CollectionController {
-    storage_controller: StorageController,
+    storage_controller: Arc<StorageController>,
     collections: Option<Vec<Collection>>,
 }
 
@@ -399,32 +401,58 @@ impl StorageController {
 
 impl ConnectionController {
     /// Создаёт новый ConnectionController с заданным StorageController и ConfigLoader
-    pub fn new(configs: HashMap<String, String>) -> ConnectionController {
-        ConnectionController { configs: configs }
+    pub fn new(storage_controller: Arc<StorageController>, config_loader: ConfigLoader) -> ConnectionController {
+        ConnectionController { 
+            storage_controller, 
+            configs: config_loader.get("connection") 
+        }
     }
 
     /// Запускает HTTP RPC-сервер на указанном адресе. Нужен общий доступ к CollectionController.
-    pub async fn connection_handler(&mut self, controller: Arc<RwLock<CollectionController>>, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let app_state = AppState { controller, configs: self.configs.clone() };
+    /// Возвращает controller обратно для возможности dump после остановки.
+    pub async fn connection_handler(&mut self, controller: Arc<RwLock<CollectionController>>, addr: SocketAddr) -> Result<Arc<RwLock<CollectionController>>, Box<dyn std::error::Error + Send + Sync>> {
+        // Создаём канал для сигнала остановки
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+        
+        let app_state = AppState { 
+            controller: Arc::clone(&controller), 
+            configs: self.configs.clone(),
+            shutdown_tx,
+        };
 
         let app = Router::new()
-            .route("/health", get(health))
-            .route("/query", post(rpc_query))
+            .route("/collection", post(add_collection))
+            .route("/collection/delete", post(delete_collection))
+            .route("/vector", post(add_vector))
+            .route("/vector/update", post(update_vector))
+            .route("/vector/get", post(get_vector))
+            .route("/vector/delete", post(delete_vector))
+            .route("/vector/filter", post(filter_by_metadata))
+            .route("/vector/similar", post(find_similar))
+            .route("/stop", post(stop))
+            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", utoipa::openapi::OpenApiBuilder::new()
+                .info(utoipa::openapi::Info::new("VectorDB API", "1.0.0"))
+                .build()))
             .with_state(app_state);
 
         let listener = TcpListener::bind(addr).await?;
-        axum::serve(listener, app).await?;
-        Ok(())
+        
+        // Запускаем сервер с graceful shutdown
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                shutdown_rx.recv().await.ok();
+            })
+            .await?;
+        
+        Ok(controller)
     }
-
-    /// Синхронный вызов для локного использования без HTTP
-    pub fn query_handler(&self) -> Result<(), &'static str> { Ok(()) }
 }
 
 #[derive(Clone)]
 struct AppState {
     controller: Arc<RwLock<CollectionController>>,
     configs: HashMap<String, String>,
+    shutdown_tx: broadcast::Sender<()>,
 }
 
 #[derive(Deserialize)]
@@ -456,6 +484,214 @@ struct AddVectorParams {
     collection: String,
     embedding: Vec<f32>,
     metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct DeleteCollectionParams {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateVectorParams {
+    collection: String,
+    vector_id: u64,
+    embedding: Option<Vec<f32>>,
+    metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct GetVectorParams {
+    collection: String,
+    vector_id: u64,
+}
+
+#[derive(Deserialize)]
+struct DeleteVectorParams {
+    collection: String,
+    vector_id: u64,
+}
+
+#[derive(Deserialize)]
+struct FilterByMetadataParams {
+    collection: String,
+    filters: HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct FindSimilarParams {
+    collection: String,
+    query: Vec<f32>,
+    k: usize,
+}
+
+
+//HTTP обработчики
+async fn add_collection(State(state): State<AppState>, Json(payload): Json<AddCollectionParams>) -> Json<RpcResponse<serde_json::Value>> {
+    let metric = LSHMetric::from_string(&payload.metric).unwrap_or(LSHMetric::Euclidean);
+    let mut ctrl = state.controller.write().await;
+    match ctrl.add_collection(payload.name, metric, payload.dimension) {
+        Ok(_) => Json(RpcResponse { 
+            status: "ok".to_string(), 
+            data: Some(serde_json::json!({"added": true})), 
+            message: None 
+        }),
+        Err(e) => Json(RpcResponse { 
+            status: "error".to_string(), 
+            data: None, 
+            message: Some(e.to_string()) 
+        }),
+    }
+}
+
+async fn delete_collection(State(state): State<AppState>, Json(payload): Json<DeleteCollectionParams>) -> Json<RpcResponse<serde_json::Value>> {
+    let mut ctrl = state.controller.write().await;
+    match ctrl.delete_collection(payload.name) {
+        Ok(_) => Json(RpcResponse { 
+            status: "ok".to_string(), 
+            data: Some(serde_json::json!({"deleted": true})), 
+            message: None 
+        }),
+        Err(e) => Json(RpcResponse { 
+            status: "error".to_string(), 
+            data: None, 
+            message: Some(e.to_string()) 
+        }),
+    }
+}
+
+async fn add_vector(State(state): State<AppState>, Json(payload): Json<AddVectorParams>) -> Json<RpcResponse<serde_json::Value>> {
+    let mut ctrl = state.controller.write().await;
+    match ctrl.add_vector(&payload.collection, payload.embedding, payload.metadata.unwrap_or_default()) {
+        Ok(id) => Json(RpcResponse { 
+            status: "ok".to_string(), 
+            data: Some(serde_json::json!({"id": id})), 
+            message: None 
+        }),
+        Err(e) => Json(RpcResponse { 
+            status: "error".to_string(), 
+            data: None, 
+            message: Some(e.to_string()) 
+        }),
+    }
+}
+
+async fn update_vector(State(state): State<AppState>, Json(payload): Json<UpdateVectorParams>) -> Json<RpcResponse<serde_json::Value>> {
+    let mut ctrl = state.controller.write().await;
+    match ctrl.update_vector(&payload.collection, payload.vector_id, payload.embedding, payload.metadata) {
+        Ok(_) => Json(RpcResponse { 
+            status: "ok".to_string(), 
+            data: Some(serde_json::json!({"updated": true})), 
+            message: None 
+        }),
+        Err(e) => Json(RpcResponse { 
+            status: "error".to_string(), 
+            data: None, 
+            message: Some(e.to_string()) 
+        }),
+    }
+}
+
+async fn get_vector(State(state): State<AppState>, Json(payload): Json<GetVectorParams>) -> Json<RpcResponse<serde_json::Value>> {
+    let ctrl = state.controller.read().await;
+    match ctrl.get_collection(&payload.collection) {
+        Some(collection) => {
+            match collection.buckets_controller.get_vector(payload.vector_id) {
+                Some(vector) => Json(RpcResponse { 
+                    status: "ok".to_string(), 
+                    data: Some(serde_json::json!({
+                        "id": vector.hash_id(),
+                        "embedding": vector.data,
+                        "metadata": vector.metadata
+                    })), 
+                    message: None 
+                }),
+                None => Json(RpcResponse { 
+                    status: "error".to_string(), 
+                    data: None, 
+                    message: Some("Вектор не найден".to_string()) 
+                }),
+            }
+        }
+        None => Json(RpcResponse { 
+            status: "error".to_string(), 
+            data: None, 
+            message: Some("Коллекция не найдена".to_string()) 
+        }),
+    }
+}
+
+async fn delete_vector(State(state): State<AppState>, Json(payload): Json<DeleteVectorParams>) -> Json<RpcResponse<serde_json::Value>> {
+    let mut ctrl = state.controller.write().await;
+    match ctrl.get_collection_mut(&payload.collection) {
+        Some(collection) => {
+            match collection.buckets_controller.remove_vector(payload.vector_id) {
+                Ok(_) => Json(RpcResponse { 
+                    status: "ok".to_string(), 
+                    data: Some(serde_json::json!({"deleted": true})), 
+                    message: None 
+                }),
+                Err(e) => Json(RpcResponse { 
+                    status: "error".to_string(), 
+                    data: None, 
+                    message: Some(e) 
+                }),
+            }
+        }
+        None => Json(RpcResponse { 
+            status: "error".to_string(), 
+            data: None, 
+            message: Some("Коллекция не найдена".to_string()) 
+        }),
+    }
+}
+
+async fn filter_by_metadata(State(state): State<AppState>, Json(payload): Json<FilterByMetadataParams>) -> Json<RpcResponse<serde_json::Value>> {
+    let ctrl = state.controller.read().await;
+    match ctrl.filter_by_metadata(&payload.collection, &payload.filters) {
+        Ok(vector_ids) => Json(RpcResponse { 
+            status: "ok".to_string(), 
+            data: Some(serde_json::json!({"vector_ids": vector_ids})), 
+            message: None 
+        }),
+        Err(e) => Json(RpcResponse { 
+            status: "error".to_string(), 
+            data: None, 
+            message: Some(e.to_string()) 
+        }),
+    }
+}
+
+async fn find_similar(State(state): State<AppState>, Json(payload): Json<FindSimilarParams>) -> Json<RpcResponse<serde_json::Value>> {
+    let ctrl = state.controller.read().await;
+    match ctrl.find_similar(payload.collection, &payload.query, payload.k) {
+        Ok(results) => Json(RpcResponse { 
+            status: "ok".to_string(), 
+            data: Some(serde_json::json!({"results": results})), 
+            message: None 
+        }),
+        Err(e) => Json(RpcResponse { 
+            status: "error".to_string(), 
+            data: None, 
+            message: Some(e.to_string()) 
+        }),
+    }
+}
+
+async fn stop(State(state): State<AppState>) -> Json<RpcResponse<String>> {
+    // Отправляем сигнал остановки
+    let _ = state.shutdown_tx.send(());
+    
+    Json(RpcResponse { 
+        status: "ok".to_string(), 
+        data: Some("Server stopping...".to_string()), 
+        message: None 
+    })
+}
+
+async fn serve_openapi_json() -> Json<serde_json::Value> {
+    let openapi_json = include_str!("../../api-docs/openapi.json");
+    let parsed: serde_json::Value = serde_json::from_str(openapi_json).unwrap_or_default();
+    Json(parsed)
 }
 
 async fn rpc_query(State(state): State<AppState>, Json(req): Json<RpcQuery>) -> Json<RpcResponse<serde_json::Value>> {
@@ -507,7 +743,7 @@ async fn rpc_query(State(state): State<AppState>, Json(req): Json<RpcQuery>) -> 
 
 impl CollectionController {
     /// Создаёт новый CollectionController с заданным StorageController
-    pub fn new(storage_controller: StorageController) -> CollectionController {
+    pub fn new(storage_controller: Arc<StorageController>) -> CollectionController {
         CollectionController { storage_controller, collections: None }
     }
 
@@ -726,6 +962,21 @@ impl CollectionController {
             Some(current) => {
                 // Проверяем размерность запроса
                 current.find_similar(query, k)
+            }
+            None => Err(format!("Коллекция '{}' не найдена", collection_name).into())
+        }
+    }
+
+    /// Фильтрует векторы по метаданным в указанной коллекции
+    pub fn filter_by_metadata(
+        &self,
+        collection_name: &str,
+        filters: &HashMap<String, String>,
+    ) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+        let collection = self.get_collection(collection_name);
+        match collection {
+            Some(current) => {
+                Ok(current.filter_by_metadata(filters))
             }
             None => Err(format!("Коллекция '{}' не найдена", collection_name).into())
         }
