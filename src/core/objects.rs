@@ -176,6 +176,10 @@ impl Collection {
     pub fn find_similar(&self, query: &Vec<f32> , k: usize) -> Result<Vec<(u64, usize, f32)>, Box<dyn std::error::Error>> {
         self.buckets_controller.find_similar(query, k)
     }
+
+    pub fn filter_by_metadata(&self, filters: &HashMap<String, String>) -> Vec<u64> {
+        self.buckets_controller.filter_by_metadata(filters)
+    }
 }
 
 //  Bucket impl

@@ -1,0 +1,462 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "VectorDB API",
+    "description": "API для работы с векторной базой данных",
+    "version": "1.0.0",
+    "contact": {
+      "name": "VectorDB Team"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "Локальный сервер разработки"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Collections",
+      "description": "Операции с коллекциями"
+    },
+    {
+      "name": "Vectors",
+      "description": "Операции с векторами"
+    },
+    {
+      "name": "System",
+      "description": "Системные операции"
+    }
+  ],
+  "paths": {
+    "/collection": {
+      "post": {
+        "tags": ["Collections"],
+        "summary": "Создать новую коллекцию",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddCollectionParams"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Коллекция успешно создана",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ошибка в запросе",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/collection/delete": {
+      "post": {
+        "tags": ["Collections"],
+        "summary": "Удалить коллекцию",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteCollectionParams"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Коллекция успешно удалена",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vector": {
+      "post": {
+        "tags": ["Vectors"],
+        "summary": "Добавить вектор в коллекцию",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddVectorParams"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Вектор успешно добавлен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vector/update": {
+      "post": {
+        "tags": ["Vectors"],
+        "summary": "Обновить вектор",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateVectorParams"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Вектор успешно обновлен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vector/get": {
+      "post": {
+        "tags": ["Vectors"],
+        "summary": "Получить вектор по ID",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetVectorParams"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Вектор найден",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vector/delete": {
+      "post": {
+        "tags": ["Vectors"],
+        "summary": "Удалить вектор",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteVectorParams"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Вектор успешно удален",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vector/filter": {
+      "post": {
+        "tags": ["Vectors"],
+        "summary": "Фильтровать векторы по метаданным",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilterByMetadataParams"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Результаты фильтрации",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vector/similar": {
+      "post": {
+        "tags": ["Vectors"],
+        "summary": "Найти похожие векторы",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FindSimilarParams"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Результаты поиска",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stop": {
+      "post": {
+        "tags": ["System"],
+        "summary": "Остановить сервер",
+        "responses": {
+          "200": {
+            "description": "Сервер остановлен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AddCollectionParams": {
+        "type": "object",
+        "required": ["name", "metric", "dimension"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Название коллекции"
+          },
+          "metric": {
+            "type": "string",
+            "enum": ["euclidean", "cosine", "manhattan"],
+            "description": "Метрика для LSH"
+          },
+          "dimension": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Размерность векторов"
+          }
+        }
+      },
+      "DeleteCollectionParams": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Название коллекции для удаления"
+          }
+        }
+      },
+      "AddVectorParams": {
+        "type": "object",
+        "required": ["collection", "embedding"],
+        "properties": {
+          "collection": {
+            "type": "string",
+            "description": "Название коллекции"
+          },
+          "embedding": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Вектор эмбеддинга"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Метаданные вектора"
+          }
+        }
+      },
+      "UpdateVectorParams": {
+        "type": "object",
+        "required": ["collection", "vector_id"],
+        "properties": {
+          "collection": {
+            "type": "string",
+            "description": "Название коллекции"
+          },
+          "vector_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "ID вектора"
+          },
+          "embedding": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Новый вектор эмбеддинга"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Новые метаданные"
+          }
+        }
+      },
+      "GetVectorParams": {
+        "type": "object",
+        "required": ["collection", "vector_id"],
+        "properties": {
+          "collection": {
+            "type": "string",
+            "description": "Название коллекции"
+          },
+          "vector_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "ID вектора"
+          }
+        }
+      },
+      "DeleteVectorParams": {
+        "type": "object",
+        "required": ["collection", "vector_id"],
+        "properties": {
+          "collection": {
+            "type": "string",
+            "description": "Название коллекции"
+          },
+          "vector_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "ID вектора"
+          }
+        }
+      },
+      "FilterByMetadataParams": {
+        "type": "object",
+        "required": ["collection", "filters"],
+        "properties": {
+          "collection": {
+            "type": "string",
+            "description": "Название коллекции"
+          },
+          "filters": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Фильтры метаданных"
+          }
+        }
+      },
+      "FindSimilarParams": {
+        "type": "object",
+        "required": ["collection", "query", "k"],
+        "properties": {
+          "collection": {
+            "type": "string",
+            "description": "Название коллекции"
+          },
+          "query": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Запросный вектор"
+          },
+          "k": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Количество похожих векторов"
+          }
+        }
+      },
+      "RpcResponse": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["ok", "error"],
+            "description": "Статус ответа"
+          },
+          "data": {
+            "description": "Данные ответа"
+          },
+          "message": {
+            "type": "string",
+            "description": "Сообщение об ошибке или дополнительная информация"
+          }
+        }
+      }
+    }
+  }
+}
