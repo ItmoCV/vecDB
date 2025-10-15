@@ -134,22 +134,8 @@ def test_api():
     
     client = VectorDBClient()
     
-    # Проверяем, что сервер запущен
-    print("\n📡 Проверка подключения к серверу...")
-    time.sleep(1)
     
-    # 1. Работа с коллекциями, созданными в main.rs
-    print("\n" + "=" * 60)
-    print("📂 Проверка существующей коллекции 'my_documents'")
-    print("=" * 60)
-    
-    collection_name = "my_documents"
-    
-    # Попытка получить вектор из существующей коллекции
-    # (предполагается, что main.rs уже создал коллекцию и добавил векторы)
-    print("\n🔍 Попытка получить информацию о существующих векторах...")
-    
-    # 2. Создание новой тестовой коллекции
+    # 1. Создание новой тестовой коллекции
     print("\n" + "=" * 60)
     print("📦 Создание новой тестовой коллекции")
     print("=" * 60)
@@ -158,7 +144,7 @@ def test_api():
     response = client.add_collection(test_collection, "euclidean", 128)
     print_response("Создание коллекции", response)
     
-    # 3. Добавление векторов
+    # 2. Добавление векторов
     print("\n" + "=" * 60)
     print("➕ Добавление векторов")
     print("=" * 60)
@@ -190,7 +176,7 @@ def test_api():
     print(f"\n📝 Добавлено векторов: {len(vector_ids)}")
     print(f"   ID векторов: {vector_ids}")
     
-    # 4. Получение вектора по ID
+    # 3. Получение вектора по ID
     if vector_ids:
         print("\n" + "=" * 60)
         print("🔍 Получение вектора по ID")
@@ -199,7 +185,7 @@ def test_api():
         response = client.get_vector(test_collection, vector_ids[0])
         print_response(f"Получение вектора ID={vector_ids[0]}", response)
     
-    # 5. Фильтрация по метаданным
+    # 4. Фильтрация по метаданным
     print("\n" + "=" * 60)
     print("🔎 Фильтрация векторов по метаданным")
     print("=" * 60)
@@ -212,16 +198,7 @@ def test_api():
     response = client.filter_by_metadata(test_collection, {"type": "document"})
     print_response("Фильтрация по type=document", response)
     
-    # 6. Поиск похожих векторов
-    print("\n" + "=" * 60)
-    print("🎯 Поиск похожих векторов")
-    print("=" * 60)
-    
-    query_vector = generate_random_embedding(128)
-    response = client.find_similar(test_collection, query_vector, k=3)
-    print_response("Поиск 3 похожих векторов", response)
-    
-    # 7. Обновление вектора
+    # 5. Обновление вектора
     if vector_ids:
         print("\n" + "=" * 60)
         print("✏️ Обновление вектора")
@@ -236,7 +213,7 @@ def test_api():
         response = client.get_vector(test_collection, vector_ids[0])
         print_response(f"Проверка обновленного вектора ID={vector_ids[0]}", response)
     
-    # 8. Удаление вектора
+    # 6. Удаление вектора
     if vector_ids and len(vector_ids) > 1:
         print("\n" + "=" * 60)
         print("🗑️ Удаление вектора")
@@ -245,7 +222,7 @@ def test_api():
         response = client.delete_vector(test_collection, vector_ids[-1])
         print_response(f"Удаление вектора ID={vector_ids[-1]}", response)
     
-    # 9. Удаление коллекции
+    # 7. Удаление коллекции
     print("\n" + "=" * 60)
     print("🗑️ Удаление тестовой коллекции")
     print("=" * 60)
@@ -253,30 +230,53 @@ def test_api():
     response = client.delete_collection(test_collection)
     print_response("Удаление коллекции", response)
     
-    # 10. Работа с существующей коллекцией my_documents (из main.rs)
+    # 8. Работа с существующей коллекцией my_documents (из main.rs)
     print("\n" + "=" * 60)
-    print("📚 Проверка коллекции из main.rs")
+    print("📚 Тестирование коллекции 'my_documents'")
     print("=" * 60)
     
-    # Добавляем новый вектор в существующую коллекцию
-    print("\n➕ Добавление вектора в коллекцию 'my_documents'...")
-    new_embedding = generate_random_embedding(384)  # Размерность из main.rs
-    new_metadata = {"category": "document", "source": "python_test", "timestamp": str(time.time())}
-    response = client.add_vector("my_documents", new_embedding, new_metadata)
-    print_response("Добавление вектора в my_documents", response)
+    # Создаем базовый вектор и несколько похожих на него
+    print("\n➕ Добавление связанных векторов в коллекцию 'my_documents'...")
     
-    if response.get("status") == "ok" and response.get("data"):
-        new_id = response["data"].get("id")
+    base_vector = np.random.randn(384)
+    added_ids = []
+    
+    # Добавляем базовый вектор
+    response = client.add_vector("my_documents", base_vector.tolist(), 
+                                 {"category": "document", "type": "base", "source": "python_test"})
+    print_response("Добавление базового вектора", response)
+    if response.get("status") == "ok":
+        added_ids.append(response["data"].get("id"))
+    
+    # Добавляем 3 похожих вектора (базовый + небольшой шум)
+    for i in range(3):
+        noise = np.random.randn(384) * 0.4  #  шум
+        similar_vector = base_vector + noise
         
-        # Ищем похожие векторы
-        print("\n🎯 Поиск похожих векторов в my_documents...")
-        response = client.find_similar("my_documents", new_embedding, k=3)
-        print_response("Поиск похожих векторов", response)
+        response = client.add_vector("my_documents", similar_vector.tolist(),
+                                     {"category": "document", "type": f"similar_{i+1}", "source": "python_test"})
+        print_response(f"Добавление похожего вектора {i+1}", response)
+        if response.get("status") == "ok":
+            added_ids.append(response["data"].get("id"))
+    
+    # Добавляем 2 совершенно разных вектора
+    for i in range(2):
+        different_vector = np.random.randn(384)
         
-        # Фильтруем по метаданным
-        print("\n🔎 Фильтрация векторов в my_documents...")
-        response = client.filter_by_metadata("my_documents", {"category": "document"})
-        print_response("Фильтрация по category=document", response)
+        response = client.add_vector("my_documents", different_vector.tolist(),
+                                     {"category": "other", "type": f"different_{i+1}", "source": "python_test"})
+        print_response(f"Добавление различного вектора {i+1}", response)
+        if response.get("status") == "ok":
+            added_ids.append(response["data"].get("id"))
+    
+    print(f"\n📝 Добавлено векторов в my_documents: {len(added_ids)}")
+    print(f"   ID векторов: {added_ids}")
+    
+    # Теперь ищем векторы похожие на базовый
+    print("\n🎯 Поиск похожих векторов (для базового вектора)...")
+    response = client.find_similar("my_documents", base_vector.tolist(), k=3)
+    print_response("Поиск 3 похожих векторов", response)
+    
     
     print("\n" + "=" * 60)
     print("✅ Тестирование завершено!")

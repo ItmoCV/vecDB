@@ -163,7 +163,7 @@ impl Collection {
             },
             None => ("".to_string(), 0),
         };
-        let buckets_controller = BucketController::new(vector_dimension, 3, 1.0, lsh_metric.clone(), Some(42));
+        let buckets_controller = BucketController::new(vector_dimension, 3, 10.0, lsh_metric.clone(), Some(42));
         Collection { 
             name, 
             id, 
