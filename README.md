@@ -261,8 +261,14 @@ cargo test -- --nocapture
 - `add_vector(embedding, metadata)` - Добавление вектора в бакет
 - `get_bucket(id)` - Получение бакета по ID
 - `get_all_buckets()` - Получение всех бакетов
-- `search_similar(query, k)` - Поиск в бакете
+- `find_similar(query, k)` - Поиск в одном бакете (используется если размер бакета >= k)
+- `find_similar_multi_bucket(query, k)` - Поиск в нескольких бакетах (используется если размер бакета < k)
 - `update_vector(vector_id, embedding, metadata)` - Обновление вектора
+
+#### Умный поиск похожих векторов
+Метод `find_similar` в коллекции автоматически выбирает оптимальную стратегию:
+- **Если размер бакета >= k**: использует `find_similar` (быстрый поиск в одном бакете)
+- **Если размер бакета < k**: использует `find_similar_multi_bucket` (поиск в 3 ближайших бакетах)
 
 ### VectorController
 

@@ -72,4 +72,14 @@ impl VectorDB {
     ) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
         self.collection_controller.filter_by_metadata(collection_name, filters)
     }
+
+    /// Ищет похожие векторы в указанной коллекции
+    pub fn find_similar(
+        &self,
+        collection_name: String,
+        query: &Vec<f32>,
+        k: usize,
+    ) -> Result<Vec<(u64, usize, f32)>, Box<dyn std::error::Error>> {
+        self.collection_controller.find_similar(collection_name, query, k)
+    }
 }

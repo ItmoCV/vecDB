@@ -455,11 +455,6 @@ struct AppState {
     shutdown_tx: broadcast::Sender<()>,
 }
 
-#[derive(Deserialize)]
-struct RpcQuery {
-    action: String,
-    payload: Option<serde_json::Value>,
-}
 
 #[derive(Serialize)]
 struct RpcResponse<T> {
@@ -468,9 +463,6 @@ struct RpcResponse<T> {
     message: Option<String>,
 }
 
-async fn health() -> Json<RpcResponse<String>> {
-    Json(RpcResponse { status: "ok".to_string(), data: Some("healthy".to_string()), message: None })
-}
 
 #[derive(Deserialize)]
 struct AddCollectionParams {
@@ -522,6 +514,13 @@ struct FindSimilarParams {
     collection: String,
     query: Vec<f32>,
     k: usize,
+}
+
+#[derive(Serialize)]
+struct SimilarVectorResult {
+    bucket_id: u64,
+    vector_index: usize,
+    score: f32,
 }
 
 
@@ -664,11 +663,23 @@ async fn filter_by_metadata(State(state): State<AppState>, Json(payload): Json<F
 async fn find_similar(State(state): State<AppState>, Json(payload): Json<FindSimilarParams>) -> Json<RpcResponse<serde_json::Value>> {
     let ctrl = state.controller.read().await;
     match ctrl.find_similar(payload.collection, &payload.query, payload.k) {
-        Ok(results) => Json(RpcResponse { 
-            status: "ok".to_string(), 
-            data: Some(serde_json::json!({"results": results})), 
-            message: None 
-        }),
+        Ok(results) => {
+            // Преобразуем кортежи в структуры для красивого JSON
+            let formatted_results: Vec<SimilarVectorResult> = results
+                .into_iter()
+                .map(|(bucket_id, vector_index, score)| SimilarVectorResult {
+                    bucket_id,
+                    vector_index,
+                    score,
+                })
+                .collect();
+            
+            Json(RpcResponse { 
+                status: "ok".to_string(), 
+                data: Some(serde_json::json!({"results": formatted_results})), 
+                message: None 
+            })
+        },
         Err(e) => Json(RpcResponse { 
             status: "error".to_string(), 
             data: None, 
@@ -686,57 +697,6 @@ async fn stop(State(state): State<AppState>) -> Json<RpcResponse<String>> {
         data: Some("Server stopping...".to_string()), 
         message: None 
     })
-}
-
-async fn serve_openapi_json() -> Json<serde_json::Value> {
-    let openapi_json = include_str!("../../api-docs/openapi.json");
-    let parsed: serde_json::Value = serde_json::from_str(openapi_json).unwrap_or_default();
-    Json(parsed)
-}
-
-async fn rpc_query(State(state): State<AppState>, Json(req): Json<RpcQuery>) -> Json<RpcResponse<serde_json::Value>> {
-    match req.action.as_str() {
-        "add_collection" => {
-            let parsed: Result<AddCollectionParams, _> = serde_json::from_value(req.payload.unwrap_or_default());
-            match parsed {
-                Ok(p) => {
-                    let metric = LSHMetric::from_string(&p.metric).unwrap_or(LSHMetric::Euclidean);
-                    let mut ctrl = state.controller.write().await;
-                    match ctrl.add_collection(p.name, metric, p.dimension) {
-                        Ok(_) => Json(RpcResponse { status: "ok".to_string(), data: Some(serde_json::json!({"added": true})), message: None }),
-                        Err(e) => Json(RpcResponse { status: "error".to_string(), data: None, message: Some(e.to_string()) }),
-                    }
-                }
-                Err(e) => Json(RpcResponse { status: "error".to_string(), data: None, message: Some(format!("bad payload: {}", e)) }),
-            }
-        }
-        "add_vector" => {
-            let parsed: Result<AddVectorParams, _> = serde_json::from_value(req.payload.unwrap_or_default());
-            match parsed {
-                Ok(p) => {
-                    let mut ctrl = state.controller.write().await;
-                    match ctrl.add_vector(&p.collection, p.embedding, p.metadata.unwrap_or_default()) {
-                        Ok(id) => Json(RpcResponse { status: "ok".to_string(), data: Some(serde_json::json!({"id": id})), message: None }),
-                        Err(e) => Json(RpcResponse { status: "error".to_string(), data: None, message: Some(e.to_string()) }),
-                    }
-                }
-                Err(e) => Json(RpcResponse { status: "error".to_string(), data: None, message: Some(format!("bad payload: {}", e)) }),
-            }
-        }
-        "dump" => {
-            let ctrl = state.controller.read().await;
-            ctrl.dump();
-            Json(RpcResponse { status: "ok".to_string(), data: Some(serde_json::json!({"dumped": true})), message: None })
-        }
-        "load" => {
-            let mut ctrl = state.controller.write().await;
-            ctrl.load();
-            Json(RpcResponse { status: "ok".to_string(), data: Some(serde_json::json!({"loaded": true})), message: None })
-        }
-        other => {
-            Json(RpcResponse { status: "error".to_string(), data: None, message: Some(format!("unknown action: {}", other)) })
-        }
-    }
 }
 
 //  CollectionController impl
@@ -960,8 +920,26 @@ impl CollectionController {
         let collection = self.get_collection(&collection_name);
         match collection {
             Some(current) => {
-                // Проверяем размерность запроса
-                current.find_similar(query, k)
+                // Получаем LSH для вычисления хеша запроса
+                let lsh = current.buckets_controller.lsh.as_ref()
+                    .ok_or("LSH не инициализирован")?;
+                
+                // Вычисляем хеш для запроса
+                let query_hash = lsh.hash(query);
+                
+                // Ищем бакет с этим хешем
+                if let Some(ref buckets) = current.buckets_controller.buckets {
+                    if let Some(bucket) = buckets.iter().find(|b| b.hash_id() == query_hash) {
+                        // Проверяем размер бакета
+                        if bucket.size() >= k {
+                            // Если в бакете достаточно векторов, ищем напрямую в этом бакете
+                            return current.buckets_controller.find_similar(query, k);
+                        }
+                    }
+                }
+                
+                // Если бакет не найден или в нем мало векторов, ищем в нескольких бакетах
+                current.buckets_controller.find_similar_multi_bucket(query, k)
             }
             None => Err(format!("Коллекция '{}' не найдена", collection_name).into())
         }
@@ -1322,7 +1300,6 @@ impl BucketController {
         query: &Vec<f32>,
         k: usize,
     ) -> Result<Vec<(u64, usize, f32)>, Box<dyn std::error::Error>> {
-        let lsh = self.lsh.as_ref().ok_or("LSH не инициализирован")?;
         let dimension = self.dimension.ok_or("Размерность не установлена")?;
 
         if query.len() != dimension {
@@ -1331,19 +1308,17 @@ impl BucketController {
 
         let mut all_results = Vec::new();
 
-        let query_hashes = lsh.multi_hash(query, 3);
-
+        // Ищем во всех бакетах, так как векторы могут быть распределены по разным бакетам
         if let Some(ref buckets) = self.buckets {
-            for hash in query_hashes {
-                if let Some(bucket) = buckets.iter().find(|b| b.hash_id() == hash) {
-                    let results = bucket.find_similar(query, k)?;
-                    for (idx, score) in results {
-                        all_results.push((bucket.hash_id(), idx, score));
-                    }
+            for bucket in buckets.iter() {
+                let results = bucket.find_similar(query, k)?;
+                for (idx, score) in results {
+                    all_results.push((bucket.hash_id(), idx, score));
                 }
             }
         }
 
+        // Сортируем по убыванию схожести (score) и берем топ k
         all_results.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         all_results.truncate(k);
 
