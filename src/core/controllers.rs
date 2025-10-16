@@ -423,6 +423,8 @@ impl ConnectionController {
         let app = Router::new()
             .route("/collection", post(add_collection))
             .route("/collection/delete", post(delete_collection))
+            .route("/collection/get", post(get_collection))
+            .route("/collection/all", post(get_all_collections))
             .route("/vector", post(add_vector))
             .route("/vector/update", post(update_vector))
             .route("/vector/get", post(get_vector))
@@ -480,6 +482,11 @@ struct AddVectorParams {
 
 #[derive(Deserialize)]
 struct DeleteCollectionParams {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct GetCollectionParams {
     name: String,
 }
 
@@ -556,6 +563,52 @@ async fn delete_collection(State(state): State<AppState>, Json(payload): Json<De
             message: Some(e.to_string()) 
         }),
     }
+}
+
+async fn get_collection(State(state): State<AppState>, Json(payload): Json<GetCollectionParams>) -> Json<RpcResponse<serde_json::Value>> {
+    let ctrl = state.controller.read().await;
+    match ctrl.get_collection(&payload.name) {
+        Some(collection) => Json(RpcResponse { 
+            status: "ok".to_string(), 
+            data: Some(serde_json::json!({
+                "name": collection.name,
+                "vector_dimension": collection.vector_dimension,
+                "metric": format!("{:?}", collection.lsh_metric),
+                "total_vectors": collection.buckets_controller.total_vectors(),
+                "total_buckets": collection.buckets_controller.count()
+            })), 
+            message: None 
+        }),
+        None => Json(RpcResponse { 
+            status: "error".to_string(), 
+            data: None, 
+            message: Some(format!("Коллекция '{}' не найдена", payload.name)) 
+        }),
+    }
+}
+
+async fn get_all_collections(State(state): State<AppState>, Json(_payload): Json<serde_json::Value>) -> Json<RpcResponse<serde_json::Value>> {
+    let ctrl = state.controller.read().await;
+    let collections = ctrl.get_all_collections();
+    
+    let collections_info: Vec<serde_json::Value> = collections.iter().map(|c| {
+        serde_json::json!({
+            "name": c.name,
+            "vector_dimension": c.vector_dimension,
+            "metric": format!("{:?}", c.lsh_metric),
+            "total_vectors": c.buckets_controller.total_vectors(),
+            "total_buckets": c.buckets_controller.count()
+        })
+    }).collect();
+    
+    Json(RpcResponse { 
+        status: "ok".to_string(), 
+        data: Some(serde_json::json!({
+            "collections": collections_info,
+            "total": collections_info.len()
+        })), 
+        message: None 
+    })
 }
 
 async fn add_vector(State(state): State<AppState>, Json(payload): Json<AddVectorParams>) -> Json<RpcResponse<serde_json::Value>> {
@@ -739,6 +792,14 @@ impl CollectionController {
         self.collections.as_mut()?.iter_mut().find(|c| c.name == name)
     }
 
+    /// Получает список всех коллекций
+    pub fn get_all_collections(&self) -> Vec<&Collection> {
+        match &self.collections {
+            Some(collections) => collections.iter().collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// Добавляет вектор в коллекцию по имени коллекции
     pub fn add_vector(
         &mut self,
@@ -889,6 +950,19 @@ impl CollectionController {
         Some(collection.buckets_controller.get_all_buckets())
     }
 
+    /// Получает вектор по ID из коллекции
+    pub fn get_vector(
+        &self,
+        collection_name: &str,
+        vector_id: u64,
+    ) -> Result<&Vector, Box<dyn std::error::Error>> {
+        let collection = self.get_collection(collection_name)
+            .ok_or_else(|| format!("Коллекция '{}' не найдена", collection_name))?;
+        
+        collection.buckets_controller.get_vector(vector_id)
+            .ok_or_else(|| format!("Вектор с ID {} не найден в коллекции '{}'", vector_id, collection_name).into())
+    }
+
     /// Обновляет вектор в коллекции, при необходимости перемещая его в другой бакет
     pub fn update_vector(
         &mut self,
@@ -909,6 +983,19 @@ impl CollectionController {
         }
         
         collection.buckets_controller.update_vector(vector_id, new_embedding, new_metadata)
+    }
+
+    /// Удаляет вектор по ID из коллекции
+    pub fn delete_vector(
+        &mut self,
+        collection_name: &str,
+        vector_id: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let collection = self.get_collection_mut(collection_name)
+            .ok_or_else(|| format!("Коллекция '{}' не найдена", collection_name))?;
+        
+        collection.buckets_controller.remove_vector(vector_id)
+            .map_err(|e| e.into())
     }
 
     pub fn find_similar(

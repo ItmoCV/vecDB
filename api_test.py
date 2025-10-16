@@ -48,6 +48,16 @@ class VectorDBClient:
         data = {"name": name}
         return self._make_request("/collection/delete", data)
     
+    def get_collection(self, name: str) -> dict:
+        """Получает информацию о коллекции"""
+        data = {"name": name}
+        return self._make_request("/collection/get", data)
+    
+    def get_all_collections(self) -> dict:
+        """Получает список всех коллекций"""
+        data = {}
+        return self._make_request("/collection/all", data)
+    
     def add_vector(self, collection: str, embedding: List[float], 
                    metadata: Optional[Dict[str, str]] = None) -> dict:
         """Добавляет вектор в коллекцию"""
@@ -144,6 +154,22 @@ def test_api():
     response = client.add_collection(test_collection, "euclidean", 128)
     print_response("Создание коллекции", response)
     
+    # 1.1. Получение информации о коллекции
+    print("\n" + "-" * 60)
+    print("📖 Получение информации о коллекции")
+    print("-" * 60)
+    
+    response = client.get_collection(test_collection)
+    print_response(f"Получение коллекции '{test_collection}'", response)
+    
+    # 1.2. Получение списка всех коллекций
+    print("\n" + "-" * 60)
+    print("📚 Получение списка всех коллекций")
+    print("-" * 60)
+    
+    response = client.get_all_collections()
+    print_response("Получение всех коллекций", response)
+    
     # 2. Добавление векторов
     print("\n" + "=" * 60)
     print("➕ Добавление векторов")
@@ -229,6 +255,9 @@ def test_api():
     
     response = client.delete_collection(test_collection)
     print_response("Удаление коллекции", response)
+
+    response = client.get_all_collections()
+    print_response("Получение всех коллекций", response)
     
     # 8. Работа с существующей коллекцией my_documents (из main.rs)
     print("\n" + "=" * 60)

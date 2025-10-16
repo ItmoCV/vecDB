@@ -34,14 +34,34 @@ impl VectorDB {
         self.collection_controller.delete_collection(name)
     }
 
+    /// Получает коллекцию по имени
+    pub fn get_collection(&self, name: &str) -> Option<&crate::core::objects::Collection> {
+        self.collection_controller.get_collection(name)
+    }
+
+    /// Получает список всех коллекций
+    pub fn get_all_collections(&self) -> Vec<&crate::core::objects::Collection> {
+        self.collection_controller.get_all_collections()
+    }
+
     /// Добавляет вектор в коллекцию
     pub fn add_vector(&mut self, collection_name: &str, embedding: Vec<f32>, metadata: HashMap<String, String>) -> Result<u64, &'static str> {
         self.collection_controller.add_vector(collection_name, embedding, metadata)
     }
 
+    /// Получает вектор по ID из коллекции
+    pub fn get_vector(&self, collection_name: &str, vector_id: u64) -> Result<&crate::core::objects::Vector, Box<dyn std::error::Error>> {
+        self.collection_controller.get_vector(collection_name, vector_id)
+    }
+
     /// Обновляет вектор в коллекции
     pub fn update_vector(&mut self, collection_name: &str, vector_id: u64, new_embedding: Option<Vec<f32>>, new_metadata: Option<HashMap<String, String>>) -> Result<(), Box<dyn std::error::Error>> {
         self.collection_controller.update_vector(collection_name, vector_id, new_embedding, new_metadata)
+    }
+
+    /// Удаляет вектор по ID из коллекции
+    pub fn delete_vector(&mut self, collection_name: &str, vector_id: u64) -> Result<(), Box<dyn std::error::Error>> {
+        self.collection_controller.delete_vector(collection_name, vector_id)
     }
 
     /// Сохраняет все коллекции на диск
