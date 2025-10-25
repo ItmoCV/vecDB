@@ -111,7 +111,6 @@ async fn main() {
     
     // Создаем connection_controller для управления HTTP соединениями
     let mut connection_controller = ConnectionController::new(
-        Arc::clone(&storage_controller),
         config_loader
     );
     

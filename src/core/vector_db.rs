@@ -19,7 +19,7 @@ impl VectorDB {
 
         // Передаем Arc на storage_controller в CollectionController и ConnectionController
         let collection_controller = CollectionController::new(Arc::clone(&storage_controller));
-        let connection_controller = ConnectionController::new(Arc::clone(&storage_controller), config_loader);
+        let connection_controller = ConnectionController::new(config_loader);
 
         VectorDB { storage_controller, collection_controller, connection_controller }
     }

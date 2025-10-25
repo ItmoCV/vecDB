@@ -1,6 +1,5 @@
 use std::{collections::HashMap, result::Result};
-use axum::{routing::{get, post}, Router, extract::State, Json};
-use serde::{Deserialize, Serialize};
+use axum::{routing::post, Router};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use std::sync::Arc;
@@ -12,6 +11,8 @@ use std::path::Path;
 use std::io::ErrorKind;
 use chrono::Utc;
 use utoipa_swagger_ui::SwaggerUi;
+use crate::core::openapi::load_openapi_spec;
+use crate::core::handlers::AppState;
 
 // structs define
 
@@ -20,7 +21,6 @@ pub struct StorageController {
 }
 
 pub struct ConnectionController {
-    storage_controller: Arc<StorageController>,
     configs: HashMap<String, String>,
 }
 
@@ -401,9 +401,8 @@ impl StorageController {
 
 impl ConnectionController {
     /// Создаёт новый ConnectionController с заданным StorageController и ConfigLoader
-    pub fn new(storage_controller: Arc<StorageController>, config_loader: ConfigLoader) -> ConnectionController {
+    pub fn new(config_loader: ConfigLoader) -> ConnectionController {
         ConnectionController { 
-            storage_controller, 
             configs: config_loader.get("connection") 
         }
     }
@@ -421,20 +420,17 @@ impl ConnectionController {
         };
 
         let app = Router::new()
-            .route("/collection", post(add_collection))
-            .route("/collection/delete", post(delete_collection))
-            .route("/collection/get", post(get_collection))
-            .route("/collection/all", post(get_all_collections))
-            .route("/vector", post(add_vector))
-            .route("/vector/update", post(update_vector))
-            .route("/vector/get", post(get_vector))
-            .route("/vector/delete", post(delete_vector))
-            .route("/vector/filter", post(filter_by_metadata))
-            .route("/vector/similar", post(find_similar))
-            .route("/stop", post(stop))
-            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", utoipa::openapi::OpenApiBuilder::new()
-                .info(utoipa::openapi::Info::new("VectorDB API", "1.0.0"))
-                .build()))
+            .route("/collection", post(crate::core::handlers::add_collection))
+            .route("/collection/delete", post(crate::core::handlers::delete_collection))
+            .route("/collection/all", post(crate::core::handlers::get_all_collections))
+            .route("/vector", post(crate::core::handlers::add_vector))
+            .route("/vector/update", post(crate::core::handlers::update_vector))
+            .route("/vector/get", post(crate::core::handlers::get_vector))
+            .route("/vector/delete", post(crate::core::handlers::delete_vector))
+            .route("/vector/filter", post(crate::core::handlers::filter_by_metadata))
+            .route("/vector/similar", post(crate::core::handlers::find_similar))
+            .route("/stop", post(crate::core::handlers::stop))
+            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", load_openapi_spec()))
             .with_state(app_state);
 
         let listener = TcpListener::bind(addr).await?;
@@ -450,307 +446,6 @@ impl ConnectionController {
     }
 }
 
-#[derive(Clone)]
-struct AppState {
-    controller: Arc<RwLock<CollectionController>>,
-    configs: HashMap<String, String>,
-    shutdown_tx: broadcast::Sender<()>,
-}
-
-
-#[derive(Serialize)]
-struct RpcResponse<T> {
-    status: String,
-    data: Option<T>,
-    message: Option<String>,
-}
-
-
-#[derive(Deserialize)]
-struct AddCollectionParams {
-    name: String,
-    metric: String,
-    dimension: usize,
-}
-
-#[derive(Deserialize)]
-struct AddVectorParams {
-    collection: String,
-    embedding: Vec<f32>,
-    metadata: Option<HashMap<String, String>>,
-}
-
-#[derive(Deserialize)]
-struct DeleteCollectionParams {
-    name: String,
-}
-
-#[derive(Deserialize)]
-struct GetCollectionParams {
-    name: String,
-}
-
-#[derive(Deserialize)]
-struct UpdateVectorParams {
-    collection: String,
-    vector_id: u64,
-    embedding: Option<Vec<f32>>,
-    metadata: Option<HashMap<String, String>>,
-}
-
-#[derive(Deserialize)]
-struct GetVectorParams {
-    collection: String,
-    vector_id: u64,
-}
-
-#[derive(Deserialize)]
-struct DeleteVectorParams {
-    collection: String,
-    vector_id: u64,
-}
-
-#[derive(Deserialize)]
-struct FilterByMetadataParams {
-    collection: String,
-    filters: HashMap<String, String>,
-}
-
-#[derive(Deserialize)]
-struct FindSimilarParams {
-    collection: String,
-    query: Vec<f32>,
-    k: usize,
-}
-
-#[derive(Serialize)]
-struct SimilarVectorResult {
-    bucket_id: u64,
-    vector_index: usize,
-    score: f32,
-}
-
-
-//HTTP обработчики
-async fn add_collection(State(state): State<AppState>, Json(payload): Json<AddCollectionParams>) -> Json<RpcResponse<serde_json::Value>> {
-    let metric = LSHMetric::from_string(&payload.metric).unwrap_or(LSHMetric::Euclidean);
-    let mut ctrl = state.controller.write().await;
-    match ctrl.add_collection(payload.name, metric, payload.dimension) {
-        Ok(_) => Json(RpcResponse { 
-            status: "ok".to_string(), 
-            data: Some(serde_json::json!({"added": true})), 
-            message: None 
-        }),
-        Err(e) => Json(RpcResponse { 
-            status: "error".to_string(), 
-            data: None, 
-            message: Some(e.to_string()) 
-        }),
-    }
-}
-
-async fn delete_collection(State(state): State<AppState>, Json(payload): Json<DeleteCollectionParams>) -> Json<RpcResponse<serde_json::Value>> {
-    let mut ctrl = state.controller.write().await;
-    match ctrl.delete_collection(payload.name) {
-        Ok(_) => Json(RpcResponse { 
-            status: "ok".to_string(), 
-            data: Some(serde_json::json!({"deleted": true})), 
-            message: None 
-        }),
-        Err(e) => Json(RpcResponse { 
-            status: "error".to_string(), 
-            data: None, 
-            message: Some(e.to_string()) 
-        }),
-    }
-}
-
-async fn get_collection(State(state): State<AppState>, Json(payload): Json<GetCollectionParams>) -> Json<RpcResponse<serde_json::Value>> {
-    let ctrl = state.controller.read().await;
-    match ctrl.get_collection(&payload.name) {
-        Some(collection) => Json(RpcResponse { 
-            status: "ok".to_string(), 
-            data: Some(serde_json::json!({
-                "name": collection.name,
-                "vector_dimension": collection.vector_dimension,
-                "metric": format!("{:?}", collection.lsh_metric),
-                "total_vectors": collection.buckets_controller.total_vectors(),
-                "total_buckets": collection.buckets_controller.count()
-            })), 
-            message: None 
-        }),
-        None => Json(RpcResponse { 
-            status: "error".to_string(), 
-            data: None, 
-            message: Some(format!("Коллекция '{}' не найдена", payload.name)) 
-        }),
-    }
-}
-
-async fn get_all_collections(State(state): State<AppState>, Json(_payload): Json<serde_json::Value>) -> Json<RpcResponse<serde_json::Value>> {
-    let ctrl = state.controller.read().await;
-    let collections = ctrl.get_all_collections();
-    
-    let collections_info: Vec<serde_json::Value> = collections.iter().map(|c| {
-        serde_json::json!({
-            "name": c.name,
-            "vector_dimension": c.vector_dimension,
-            "metric": format!("{:?}", c.lsh_metric),
-            "total_vectors": c.buckets_controller.total_vectors(),
-            "total_buckets": c.buckets_controller.count()
-        })
-    }).collect();
-    
-    Json(RpcResponse { 
-        status: "ok".to_string(), 
-        data: Some(serde_json::json!({
-            "collections": collections_info,
-            "total": collections_info.len()
-        })), 
-        message: None 
-    })
-}
-
-async fn add_vector(State(state): State<AppState>, Json(payload): Json<AddVectorParams>) -> Json<RpcResponse<serde_json::Value>> {
-    let mut ctrl = state.controller.write().await;
-    match ctrl.add_vector(&payload.collection, payload.embedding, payload.metadata.unwrap_or_default()) {
-        Ok(id) => Json(RpcResponse { 
-            status: "ok".to_string(), 
-            data: Some(serde_json::json!({"id": id})), 
-            message: None 
-        }),
-        Err(e) => Json(RpcResponse { 
-            status: "error".to_string(), 
-            data: None, 
-            message: Some(e.to_string()) 
-        }),
-    }
-}
-
-async fn update_vector(State(state): State<AppState>, Json(payload): Json<UpdateVectorParams>) -> Json<RpcResponse<serde_json::Value>> {
-    let mut ctrl = state.controller.write().await;
-    match ctrl.update_vector(&payload.collection, payload.vector_id, payload.embedding, payload.metadata) {
-        Ok(_) => Json(RpcResponse { 
-            status: "ok".to_string(), 
-            data: Some(serde_json::json!({"updated": true})), 
-            message: None 
-        }),
-        Err(e) => Json(RpcResponse { 
-            status: "error".to_string(), 
-            data: None, 
-            message: Some(e.to_string()) 
-        }),
-    }
-}
-
-async fn get_vector(State(state): State<AppState>, Json(payload): Json<GetVectorParams>) -> Json<RpcResponse<serde_json::Value>> {
-    let ctrl = state.controller.read().await;
-    match ctrl.get_collection(&payload.collection) {
-        Some(collection) => {
-            match collection.buckets_controller.get_vector(payload.vector_id) {
-                Some(vector) => Json(RpcResponse { 
-                    status: "ok".to_string(), 
-                    data: Some(serde_json::json!({
-                        "id": vector.hash_id(),
-                        "embedding": vector.data,
-                        "metadata": vector.metadata
-                    })), 
-                    message: None 
-                }),
-                None => Json(RpcResponse { 
-                    status: "error".to_string(), 
-                    data: None, 
-                    message: Some("Вектор не найден".to_string()) 
-                }),
-            }
-        }
-        None => Json(RpcResponse { 
-            status: "error".to_string(), 
-            data: None, 
-            message: Some("Коллекция не найдена".to_string()) 
-        }),
-    }
-}
-
-async fn delete_vector(State(state): State<AppState>, Json(payload): Json<DeleteVectorParams>) -> Json<RpcResponse<serde_json::Value>> {
-    let mut ctrl = state.controller.write().await;
-    match ctrl.get_collection_mut(&payload.collection) {
-        Some(collection) => {
-            match collection.buckets_controller.remove_vector(payload.vector_id) {
-                Ok(_) => Json(RpcResponse { 
-                    status: "ok".to_string(), 
-                    data: Some(serde_json::json!({"deleted": true})), 
-                    message: None 
-                }),
-                Err(e) => Json(RpcResponse { 
-                    status: "error".to_string(), 
-                    data: None, 
-                    message: Some(e) 
-                }),
-            }
-        }
-        None => Json(RpcResponse { 
-            status: "error".to_string(), 
-            data: None, 
-            message: Some("Коллекция не найдена".to_string()) 
-        }),
-    }
-}
-
-async fn filter_by_metadata(State(state): State<AppState>, Json(payload): Json<FilterByMetadataParams>) -> Json<RpcResponse<serde_json::Value>> {
-    let ctrl = state.controller.read().await;
-    match ctrl.filter_by_metadata(&payload.collection, &payload.filters) {
-        Ok(vector_ids) => Json(RpcResponse { 
-            status: "ok".to_string(), 
-            data: Some(serde_json::json!({"vector_ids": vector_ids})), 
-            message: None 
-        }),
-        Err(e) => Json(RpcResponse { 
-            status: "error".to_string(), 
-            data: None, 
-            message: Some(e.to_string()) 
-        }),
-    }
-}
-
-async fn find_similar(State(state): State<AppState>, Json(payload): Json<FindSimilarParams>) -> Json<RpcResponse<serde_json::Value>> {
-    let ctrl = state.controller.read().await;
-    match ctrl.find_similar(payload.collection, &payload.query, payload.k) {
-        Ok(results) => {
-            // Преобразуем кортежи в структуры для красивого JSON
-            let formatted_results: Vec<SimilarVectorResult> = results
-                .into_iter()
-                .map(|(bucket_id, vector_index, score)| SimilarVectorResult {
-                    bucket_id,
-                    vector_index,
-                    score,
-                })
-                .collect();
-            
-            Json(RpcResponse { 
-                status: "ok".to_string(), 
-                data: Some(serde_json::json!({"results": formatted_results})), 
-                message: None 
-            })
-        },
-        Err(e) => Json(RpcResponse { 
-            status: "error".to_string(), 
-            data: None, 
-            message: Some(e.to_string()) 
-        }),
-    }
-}
-
-async fn stop(State(state): State<AppState>) -> Json<RpcResponse<String>> {
-    // Отправляем сигнал остановки
-    let _ = state.shutdown_tx.send(());
-    
-    Json(RpcResponse { 
-        status: "ok".to_string(), 
-        data: Some("Server stopping...".to_string()), 
-        message: None 
-    })
-}
 
 //  CollectionController impl
 

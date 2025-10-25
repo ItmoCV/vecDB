@@ -583,35 +583,36 @@ fn test_vector_dimension_validation() {
     use crate::core::controllers::{CollectionController, StorageController};
     use crate::core::lsh::LSHMetric;
     use std::collections::HashMap;
-    
-    // Создаем контроллеры
-    let storage_controller = StorageController::new(HashMap::new());
-    let mut collection_controller = CollectionController::new(storage_controller);
-    
+    use std::sync::Arc;
+
+    // Создаем контроллеры с Arc
+    let storage_controller = Arc::new(StorageController::new(HashMap::new()));
+    let mut collection_controller = CollectionController::new(Arc::clone(&storage_controller));
+
     // Создаем коллекцию с размерностью 384
     let collection_name = "test_collection".to_string();
     collection_controller.add_collection(collection_name.clone(), LSHMetric::Euclidean, 384).unwrap();
-    
+
     // Создаем правильный вектор (384 измерения)
     let correct_vector = vec![1.0; 384];
     let metadata = HashMap::new();
-    
+
     // Добавляем правильный вектор - должно работать
     let result = collection_controller.add_vector(&collection_name, correct_vector, metadata.clone());
     assert!(result.is_ok(), "Правильный вектор должен быть добавлен успешно");
-    
+
     // Создаем неправильный вектор (100 измерений)
     let incorrect_vector = vec![1.0; 100];
-    
+
     // Пытаемся добавить неправильный вектор - должно вернуть ошибку
     let result = collection_controller.add_vector(&collection_name, incorrect_vector, metadata);
     assert!(result.is_err(), "Неправильный вектор должен быть отклонен");
-    
+
     // Проверяем сообщение об ошибке
     if let Err(error_msg) = result {
-        assert!(error_msg.contains("Размерность вектора не соответствует размерности коллекции"));
+        assert!(error_msg.to_string().contains("Размерность вектора не соответствует размерности коллекции"));
     }
-    
+
     println!("Тест валидации размерности векторов завершен успешно!");
 }
 
