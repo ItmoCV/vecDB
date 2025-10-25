@@ -1,0 +1,29 @@
+{
+    "storage": {
+        "path": "/app"
+    },
+    "server": {
+        "host": "0.0.0.0",
+        "port": 8080,
+        "description": "Coordinator API Gateway",
+        "role": "coordinator"
+    },
+    "sharding": {
+        "enabled": true,
+        "strategy": "hash_based",
+        "shards": [
+            {
+                "id": "shard1",
+                "host": "vecdb-shard1",
+                "port": 8081,
+                "description": "Первый шард кластера"
+            },
+            {
+                "id": "shard2", 
+                "host": "vecdb-shard2",
+                "port": 8082,
+                "description": "Второй шард кластера"
+            }
+        ]
+    }
+}

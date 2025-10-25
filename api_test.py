@@ -13,7 +13,7 @@ import time
 class VectorDBClient:
     """Клиент для работы с VectorDB HTTP API"""
     
-    def __init__(self, base_url: str = "http://127.0.0.1:8080"):
+    def __init__(self, base_url: str = "http://127.0.0.1:9090"):
         self.base_url = base_url
         self.session = requests.Session()
         
@@ -263,6 +263,7 @@ def test_api():
     print("\n" + "=" * 60)
     print("📚 Тестирование коллекции 'my_documents'")
     print("=" * 60)
+    client.add_collection('my_documents')
     
     # Создаем базовый вектор и несколько похожих на него
     print("\n➕ Добавление связанных векторов в коллекцию 'my_documents'...")

@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
-use crate::core::{objects::{Collection, Vector, Bucket}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}, lsh::{LSH, LSHMetric}, config::ConfigLoader};
+use crate::core::{objects::{Collection, Vector, Bucket}, interfaces::{CollectionObjectController, Object}, embeddings::{find_most_similar}, lsh::{LSH, LSHMetric}, config::ConfigLoader, shard_client::{ShardClient, MultiShardClient}, vector_db::VectorDB};
 use std::fs;
 use std::path::Path;
 use std::io::ErrorKind;
@@ -21,7 +21,7 @@ pub struct StorageController {
 }
 
 pub struct ConnectionController {
-    configs: HashMap<String, String>,
+    config_loader: ConfigLoader,
 }
 
 pub struct CollectionController {
@@ -34,7 +34,7 @@ pub struct VectorController {
     pub vectors: Option<Vec<Vector>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BucketController {
     pub buckets: Option<Vec<Bucket>>,
     pub lsh: Option<LSH>,
@@ -400,38 +400,109 @@ impl StorageController {
 //  ConnectionController impl
 
 impl ConnectionController {
-    /// Создаёт новый ConnectionController с заданным StorageController и ConfigLoader
+    /// Создаёт новый ConnectionController с заданным ConfigLoader
     pub fn new(config_loader: ConfigLoader) -> ConnectionController {
         ConnectionController { 
-            configs: config_loader.get("connection") 
+            config_loader 
         }
+    }
+
+    /// Получает конфигурацию соединения
+    pub fn get_connection_config(&self) -> HashMap<String, String> {
+        self.config_loader.get("server")
+    }
+
+    /// Получает ConfigLoader для доступа к конфигурации
+    pub fn get_config_loader(&self) -> &ConfigLoader {
+        &self.config_loader
+    }
+
+    /// Создает клиент для взаимодействия с шардами
+    async fn create_shard_client(&self) -> Option<Arc<MultiShardClient>> {
+        // Используем ConfigLoader для получения конфигурации шардов
+        let shard_configs = match self.config_loader.get_shard_configs() {
+            Ok(configs) => configs,
+            Err(e) => {
+                println!("⚠️  Ошибка получения конфигурации шардов: {}", e);
+                return None;
+            }
+        };
+        
+        let mut multi_client = MultiShardClient::new();
+        
+        for config in shard_configs {
+            let base_url = format!("http://{}:{}", config.host, config.port);
+            let client = ShardClient::new(base_url.clone());
+            multi_client.add_shard_client(config.id.clone(), client);
+            println!("🔗 Добавлен клиент для шарда {}: {}", config.id, base_url);
+        }
+        
+        Some(Arc::new(multi_client))
+    }
+
+    /// Запускает HTTP сервер с VectorDB
+    pub async fn start_server(&mut self, vector_db: VectorDB, addr: SocketAddr) -> Result<VectorDB, Box<dyn std::error::Error + Send + Sync>> {
+        // Создаем Arc<RwLock<VectorDB>> для передачи в connection_handler
+        let vector_db_arc = Arc::new(RwLock::new(vector_db));
+        
+        // Запускаем сервер
+        let returned_db = self.connection_handler(vector_db_arc, addr).await?;
+        
+        // Извлекаем VectorDB из Arc<RwLock<VectorDB>>
+        let returned_db = Arc::try_unwrap(returned_db)
+            .map_err(|_| "Не удалось извлечь VectorDB из Arc")?;
+        Ok(returned_db.into_inner())
     }
 
     /// Запускает HTTP RPC-сервер на указанном адресе. Нужен общий доступ к CollectionController.
     /// Возвращает controller обратно для возможности dump после остановки.
-    pub async fn connection_handler(&mut self, controller: Arc<RwLock<CollectionController>>, addr: SocketAddr) -> Result<Arc<RwLock<CollectionController>>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn connection_handler(&mut self, vector_db: Arc<RwLock<VectorDB>>, addr: SocketAddr) -> Result<Arc<RwLock<VectorDB>>, Box<dyn std::error::Error + Send + Sync>> {
         // Создаём канал для сигнала остановки
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
         
-        let app_state = AppState { 
-            controller: Arc::clone(&controller), 
-            configs: self.configs.clone(),
-            shutdown_tx,
+        // Определяем роль узла
+        let is_coordinator = self.config_loader.is_coordinator();
+        
+        // Создаем клиент для шардов, если это координатор
+        let shard_client = if is_coordinator {
+            self.create_shard_client().await
+        } else {
+            None
         };
 
-        let app = Router::new()
-            .route("/collection", post(crate::core::handlers::add_collection))
-            .route("/collection/delete", post(crate::core::handlers::delete_collection))
-            .route("/collection/all", post(crate::core::handlers::get_all_collections))
-            .route("/vector", post(crate::core::handlers::add_vector))
-            .route("/vector/update", post(crate::core::handlers::update_vector))
-            .route("/vector/get", post(crate::core::handlers::get_vector))
-            .route("/vector/delete", post(crate::core::handlers::delete_vector))
-            .route("/vector/filter", post(crate::core::handlers::filter_by_metadata))
-            .route("/vector/similar", post(crate::core::handlers::find_similar))
-            .route("/stop", post(crate::core::handlers::stop))
-            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", load_openapi_spec()))
-            .with_state(app_state);
+        let app_state = AppState { 
+            vector_db: Arc::clone(&vector_db), 
+            configs: self.config_loader.get("server"),
+            shutdown_tx,
+            shard_client,
+        };
+
+        // Создаем роутер в зависимости от роли узла
+        let app = if is_coordinator {
+            // Координатор - полный пользовательский API + внутренний API
+            Router::new()
+                .route("/collection", post(crate::core::handlers::add_collection))
+                .route("/collection/delete", post(crate::core::handlers::delete_collection))
+                .route("/collection/get", post(crate::core::handlers::get_collection))
+                .route("/collection/all", post(crate::core::handlers::get_all_collections))
+                .route("/vector", post(crate::core::handlers::add_vector))
+                .route("/vector/update", post(crate::core::handlers::update_vector))
+                .route("/vector/get", post(crate::core::handlers::get_vector))
+                .route("/vector/delete", post(crate::core::handlers::delete_vector))
+                .route("/vector/filter", post(crate::core::handlers::filter_by_metadata))
+                .route("/vector/similar", post(crate::core::handlers::find_similar))
+                .route("/shard", post(crate::core::handlers::handle_shard_request))
+                .route("/health", axum::routing::get(crate::core::handlers::health_check))
+                .route("/stop", post(crate::core::handlers::stop))
+                .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", load_openapi_spec()))
+                .with_state(app_state)
+        } else {
+            // Шард - только внутренний API для координатора
+            Router::new()
+                .route("/shard", post(crate::core::handlers::handle_shard_request))
+                .route("/health", axum::routing::get(crate::core::handlers::health_check))
+                .with_state(app_state)
+        };
 
         let listener = TcpListener::bind(addr).await?;
         
@@ -442,7 +513,7 @@ impl ConnectionController {
             })
             .await?;
         
-        Ok(controller)
+        Ok(vector_db)
     }
 }
 
@@ -613,7 +684,7 @@ impl CollectionController {
     }
 
     /// Загружает все коллекции из storage
-    pub fn load(&mut self) {
+    pub fn load(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let collection_names = self.storage_controller.get_all_collections_name();
         let mut count = 0;
 
@@ -631,6 +702,8 @@ impl CollectionController {
         } else {
             println!("Коллекции не найдены в storage.");
         }
+
+        Ok(())
     }
 
     /// Получает бакет по ID

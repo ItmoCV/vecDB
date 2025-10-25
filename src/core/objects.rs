@@ -15,7 +15,7 @@ pub struct Vector {
     hash_id: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Collection {
     pub name: String,
     pub buckets_controller: BucketController,
