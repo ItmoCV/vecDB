@@ -1,31 +1,15 @@
 // src/main.rs
-use std::collections::HashMap;
 use std::env;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use crate::core::embeddings::make_embeddings;
 use crate::core::vector_db::VectorDB;
-use crate::core::lsh::LSHMetric;
-use crate::core::controllers::{CollectionController, ConnectionController, StorageController};
 use crate::core::config::ConfigLoader;
+use crate::core::controllers::ConnectionController;
 
 pub mod core;
 
-// Функция для создания метаданных
-fn create_metadata(category: &str, additional: Option<HashMap<String, String>>) -> HashMap<String, String> {
-    let mut meta = HashMap::new();
-    meta.insert("category".to_string(), category.to_string());
-
-    if let Some(additional_meta) = additional {
-        meta.extend(additional_meta);
-    }
-
-    meta
-}
 
 #[tokio::main]
 async fn main() {
-    println!("=== Демонстрация работы с VectorDB ===\n");
+    println!("=== Запуск VectorDB ===\n");
 
     // Извлекаем путь до конфига из аргументов командной строки
     let args: Vec<String> = env::args().collect();
@@ -37,71 +21,73 @@ async fn main() {
         std::process::exit(1);
     };
 
-    // Создаем VectorDB, передав путь до конфиг файла
-    let mut db = VectorDB::new(config_path.clone());
-
-    // // Пробуем загрузить существующие коллекции
-    // println!("📂 Попытка загрузить существующие коллекции...");
-    // db.load();
-
-    // Создаем коллекцию с метрикой Euclidean и размерностью векторов 384
-    let collection_name = "my_documents".to_string();
-    let vector_dimension = 384; // Размерность эмбеддингов
+    // Создаем единый ConfigLoader
+    let mut config_loader = ConfigLoader::new();
+    config_loader.load(config_path.clone());
     
-    match db.add_collection(collection_name.clone(), LSHMetric::Euclidean, vector_dimension) {
-        Ok(_) => {
-            println!("✅ Создана новая коллекция: {} с размерностью векторов: {}", collection_name, vector_dimension);
-            
-            // Подготавливаем текстовые векторы
-            let texts = vec![
-                "Добро пожаловать в векторную базу данных",
-                "Это демонстрация работы с коллекциями"
-            ];
+    println!("📋 Настройки из конфигурации:");
+    let role = config_loader.get_role();
+    println!("🎯 Роль: {}", role.to_uppercase());
+    
+    let is_coordinator = config_loader.is_coordinator();
 
-            let mut vector_ids = Vec::new();
-
-            // Добавляем векторы в коллекцию
-            for (i, text) in texts.iter().enumerate() {
-                let embedding = make_embeddings(text).expect("Не удалось создать эмбеддинг");
-                let metadata = create_metadata("document", None);
-
-                let id = db.add_vector(&collection_name, embedding, metadata).unwrap();
-                vector_ids.push(id);
-                println!("  ➕ Добавлен вектор {} с ID: {}", i + 1, id);
+    if is_coordinator {
+        println!("📡 Координатор - управляет шардами");
+        match config_loader.get_shard_configs() {
+            Ok(shard_configs) => {
+                println!("📊 Найдено {} шардов в конфигурации", shard_configs.len());
+                for (i, config) in shard_configs.iter().enumerate() {
+                    println!("  Шард {}: {}:{}", i + 1, config.host, config.port);
+                }
             }
-
-            println!("📝 Всего добавлено {} векторов в коллекцию '{}'", vector_ids.len(), collection_name);
-
-    //         // Сохраняем все коллекции
-    //         db.dump();
-    //         println!("💾 Коллекции успешно сохранены на диск!\n");
+            Err(e) => {
+                println!("❌ Ошибка чтения конфигурации шардов: {}", e);
+            }
         }
-        Err(_) => {
-            println!("ℹ️  Коллекция '{}' уже существует, используем существующую\n", collection_name);
+    } else {
+        println!("💾 Шард - работает только с локальными данными");
+    }
+
+    // Создаем VectorDB из конфигурации
+    let mut db = match VectorDB::new_from_config(config_loader.clone()) {
+        Ok(db) => {
+            if role == "coordinator" {
+                println!("✅ Создан координатор VectorDB");
+            } else {
+                println!("✅ Создан шард VectorDB");
+            }
+            db
+        }
+        Err(e) => {
+            println!("❌ Ошибка создания VectorDB: {}", e);
+            println!("🔄 Пробуем создать обычную VectorDB...");
+            // Создаем новый ConfigLoader для fallback
+            let mut fallback_config = ConfigLoader::new();
+            fallback_config.load(config_path.clone());
+            VectorDB::new(fallback_config)
+        }
+    };
+
+    // Пробуем загрузить существующие коллекции с диска
+    println!("📂 Попытка загрузить существующие коллекции...");
+    match db.load().await {
+        Ok(_) => {
+            println!("✅ Загружено коллекций с диска");
+        }
+        Err(e) => {
+            println!("⚠️  Не удалось загрузить данные с диска: {}", e);
+            println!("🆕 Будет создана новая пустая база данных");
         }
     }
 
     // ========== ЗАПУСК HTTP СЕРВЕРА ==========
     println!("🚀 Подготовка к запуску HTTP сервера...");
     
-    // Подготовка контроллеров для HTTP сервера
-    let mut config_loader = ConfigLoader::new();
-    config_loader.load(config_path);
+    // Создаем ConnectionController для HTTP сервера
+    let mut connection_controller = ConnectionController::new(config_loader);
     
-    let storage_controller = Arc::new(
-        StorageController::new(config_loader.get("path"))
-    );
-    
-    // Извлекаем collection_controller из db и оборачиваем в Arc<RwLock<>>
-    let collection_controller = Arc::new(RwLock::new(
-        std::mem::replace(
-            db.collection_controller_mut(),
-            CollectionController::new(Arc::clone(&storage_controller))
-        )
-    ));
-    
-    // Получаем адрес и порт из конфига ПЕРЕД созданием connection_controller
-    let connection_config = config_loader.get("connection");
+    // Получаем адрес сервера из ConnectionController
+    let connection_config = connection_controller.get_connection_config();
     let host = connection_config.get("host")
         .map(|s| s.as_str())
         .unwrap_or("0.0.0.0");
@@ -109,33 +95,33 @@ async fn main() {
         .map(|s| s.as_str())
         .unwrap_or("8080");
     
-    // Создаем connection_controller для управления HTTP соединениями
-    let mut connection_controller = ConnectionController::new(
-        config_loader
-    );
-    
     let addr_str = format!("{}:{}", host, port);
-    let addr = addr_str.parse().expect("Неверный адрес сервера из конфига");
+    let addr = match addr_str.parse::<std::net::SocketAddr>() {
+        Ok(addr) => addr,
+        Err(e) => {
+            eprintln!("❌ Ошибка парсинга адреса сервера: {}", e);
+            std::process::exit(1);
+        }
+    };
     
-    println!("\n✅ Сервер готов к запуску");
+    println!("\n✅ VectorDB сервер готов к работе");
     println!("🌐 Адрес сервера: http://{}", addr);
-    println!("📖 Swagger UI: http://{}/swagger-ui", addr);
-    println!("📄 OpenAPI спецификация: http://{}/api-docs/openapi.json", addr);
+    if is_coordinator {
+        println!("📖 Swagger UI: http://{}/swagger-ui", addr);
+        println!("📄 OpenAPI спецификация: http://{}/api-docs/openapi.json", addr);
+    }
+    println!("🔍 Health check: http://{}/health", addr);
     println!("\n🛑 Для остановки сервера отправьте POST запрос на /stop");
     println!("═══════════════════════════════════════════════════════\n");
     
-    // Запускаем HTTP сервер (блокирует выполнение до остановки)
-    match connection_controller
-        .connection_handler(collection_controller, addr)
-        .await
-    {
-        Ok(returned_controller) => {
+    // Запускаем HTTP сервер через ConnectionController (блокирует выполнение до остановки)
+    match connection_controller.start_server(db, addr).await {
+        Ok(returned_db) => {
             println!("\n🛑 Получен сигнал остановки сервера");
             println!("💾 Сохранение всех коллекций на диск...");
             
-            // Получаем контроллер обратно и выполняем dump
-            let ctrl = returned_controller.read().await;
-            ctrl.dump();
+            // Выполняем dump через возвращенный VectorDB
+            returned_db.dump().await;
             
             println!("✅ Все коллекции успешно сохранены!");
             println!("👋 Завершение работы...");

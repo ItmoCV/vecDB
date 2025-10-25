@@ -1,15 +1,9 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::collections::HashMap;
-use crate::core::objects::{Vector};
-use crate::core::lsh::LSHMetric;
 use serde::{Serialize, Deserialize};
 
 // util types
 
-pub struct VectorResponse {
-    vectors: Vec<Vector>,
-    score: Vec<i8>,
-}
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct StorageVector {

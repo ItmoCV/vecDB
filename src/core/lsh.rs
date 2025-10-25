@@ -15,7 +15,7 @@ pub enum LSHMetric {
     Manhattan,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LSH {
     /// Количество хэш-функций
     pub num_hashes: usize,
