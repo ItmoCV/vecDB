@@ -249,12 +249,12 @@ def test_api():
         print_response(f"Удаление вектора ID={vector_ids[-1]}", response)
     
     # 7. Удаление коллекции
-    print("\n" + "=" * 60)
-    print("🗑️ Удаление тестовой коллекции")
-    print("=" * 60)
+    # print("\n" + "=" * 60)
+    # print("🗑️ Удаление тестовой коллекции")
+    # print("=" * 60)
     
-    response = client.delete_collection(test_collection)
-    print_response("Удаление коллекции", response)
+    # response = client.delete_collection(test_collection)
+    # print_response("Удаление коллекции", response)
 
     response = client.get_all_collections()
     print_response("Получение всех коллекций", response)
