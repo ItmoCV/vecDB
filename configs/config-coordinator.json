@@ -11,6 +11,7 @@
     "sharding": {
         "enabled": true,
         "strategy": "hash_based",
+        "mode": "bucket_based",
         "shards": [
             {
                 "id": "shard1",

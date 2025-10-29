@@ -106,7 +106,7 @@ fn test_shard_manager_creation() {
         },
     ];
 
-    let manager = ShardManager::new(configs, RoutingStrategy::HashBased);
+    let manager = ShardManager::new(configs, RoutingStrategy::HashBased, crate::core::sharding::ShardingMode::CollectionBased);
     
     // Проверяем, что шарды созданы
     assert!(manager.get_shard_info("shard1").is_some());
@@ -136,7 +136,7 @@ fn test_collection_routing() {
         },
     ];
 
-    let manager = ShardManager::new(configs, RoutingStrategy::HashBased);
+    let manager = ShardManager::new(configs, RoutingStrategy::HashBased, crate::core::sharding::ShardingMode::CollectionBased);
     
     // Тестируем роутинг коллекций
     let shard1 = manager.get_shard_for_collection("collection1").unwrap();
