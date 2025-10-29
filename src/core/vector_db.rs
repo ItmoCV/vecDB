@@ -41,12 +41,14 @@ impl VectorDB {
             // Это Coordinator - управляет всеми шардами
             let shard_configs = config_loader.get_shard_configs()?;
             let routing_strategy = config_loader.get_routing_strategy();
+            let sharding_mode = config_loader.get_sharding_mode();
             
             Self::new_coordinator(
                 storage_controller,
                 collection_controller,
                 shard_configs,
-                routing_strategy
+                routing_strategy,
+                sharding_mode
             )
         } else {
             // Это Shard Node - работает только с локальными данными
@@ -62,11 +64,12 @@ impl VectorDB {
         storage_controller: Arc<StorageController>,
         collection_controller: CollectionController,
         shard_configs: Vec<ShardConfig>,
-        routing_strategy: RoutingStrategy
+        routing_strategy: RoutingStrategy,
+        sharding_mode: crate::core::sharding::ShardingMode
     ) -> Result<Self, String> {
         // Создаем менеджер шардов
         let shard_manager = Arc::new(tokio::sync::RwLock::new(
-            ShardManager::new(shard_configs.clone(), routing_strategy)
+            ShardManager::new(shard_configs.clone(), routing_strategy, sharding_mode)
         ));
 
         // Создаем клиенты для удаленных шардов

@@ -43,6 +43,7 @@ pub struct Shard {
 pub struct ShardManager {
     shards: HashMap<String, Shard>,
     routing_strategy: RoutingStrategy,
+    sharding_mode: ShardingMode,
     replication_factor: u8,
 }
 
@@ -57,6 +58,15 @@ pub enum RoutingStrategy {
     LSHBased,
     /// Роутинг по метаданным
     MetadataBased,
+}
+
+/// Режим шардирования
+#[derive(Debug, Clone, PartialEq)]
+pub enum ShardingMode {
+    /// Шардирование по коллекциям: каждая коллекция полностью на одном шарде
+    CollectionBased,
+    /// Шардирование по бакетам: коллекция на всех шардах, бакеты распределены
+    BucketBased,
 }
 
 /// Результат операции с шардом
@@ -76,7 +86,7 @@ pub struct ShardCoordinator {
 
 impl ShardManager {
     /// Создает новый менеджер шардов
-    pub fn new(configs: Vec<ShardConfig>, strategy: RoutingStrategy) -> Self {
+    pub fn new(configs: Vec<ShardConfig>, strategy: RoutingStrategy, mode: ShardingMode) -> Self {
         let mut shards = HashMap::new();
         
         for config in configs {
@@ -96,8 +106,14 @@ impl ShardManager {
         ShardManager {
             shards,
             routing_strategy: strategy,
+            sharding_mode: mode,
             replication_factor: 2, // По умолчанию
         }
+    }
+
+    /// Получает текущий режим шардирования
+    pub fn get_sharding_mode(&self) -> &ShardingMode {
+        &self.sharding_mode
     }
 
     /// Определяет шард для коллекции
@@ -364,102 +380,194 @@ impl ShardCoordinator {
         }
     }
 
-    /// Создает коллекцию с учетом шардирования
+    /// Создает коллекцию с учетом режима шардирования
     pub async fn create_collection(
         &self,
         name: String,
         lsh_metric: LSHMetric,
         vector_dimension: usize,
     ) -> Result<(), String> {
-        // Определяем целевой шард для коллекции
-        let shard_id = {
+        let sharding_mode = {
             let shard_manager = self.shard_manager.read().await;
-            let target_shard = shard_manager.get_shard_for_collection(&name)?;
-            println!("🎯 Роутинг коллекции '{}' на шард: {}", name, target_shard);
-            target_shard
+            shard_manager.get_sharding_mode().clone()
         };
 
-        // Создаем коллекцию ТОЛЬКО на целевом шарде
-        if let Some(ref multi_client) = self.multi_shard_client {
-            if let Some(client) = multi_client.get_client(&shard_id) {
-                match client.create_collection(name.clone(), lsh_metric, vector_dimension).await {
-                    Ok(response) => {
-                if !response.success {
-                            return Err(format!("Ошибка создания коллекции на шарде {}: {:?}", 
-                                             shard_id, response.error));
+        match sharding_mode {
+            ShardingMode::CollectionBased => {
+                // Collection-based: создаем коллекцию только на одном шарде
+                let shard_id = {
+                    let shard_manager = self.shard_manager.read().await;
+                    let target_shard = shard_manager.get_shard_for_collection(&name)?;
+                    println!("🎯 Collection-based: роутинг коллекции '{}' на шард: {}", name, target_shard);
+                    target_shard
+                };
+
+                if let Some(ref multi_client) = self.multi_shard_client {
+                    if let Some(client) = multi_client.get_client(&shard_id) {
+                        match client.create_collection(name.clone(), lsh_metric, vector_dimension).await {
+                            Ok(response) => {
+                                if !response.success {
+                                    return Err(format!("Ошибка создания коллекции на шарде {}: {:?}", 
+                                                     shard_id, response.error));
+                                }
+                                println!("✅ Коллекция '{}' создана на шарде {} (collection-based)", name, shard_id);
+                            }
+                            Err(e) => {
+                                return Err(format!("Ошибка связи с шардом {}: {}", shard_id, e));
+                            }
                         }
-                        println!("✅ Коллекция '{}' создана на шарде {}", name, shard_id);
+                    } else {
+                        return Err(format!("Клиент для шарда {} не найден", shard_id));
                     }
-                    Err(e) => {
-                        return Err(format!("Ошибка связи с шардом {}: {}", shard_id, e));
-                    }
+                } else {
+                    return Err("Клиент для множественных шардов не инициализирован".to_string());
                 }
-            } else {
-                return Err(format!("Клиент для шарда {} не найден", shard_id));
+
+                // Регистрируем коллекцию в метаданных
+                {
+                    let mut shard_manager = self.shard_manager.write().await;
+                    shard_manager.add_collection_to_shard(&shard_id, name)?;
+                }
+
+                Ok(())
             }
-        } else {
-            return Err("Клиент для множественных шардов не инициализирован".to_string());
-        }
+            ShardingMode::BucketBased => {
+                // Bucket-based: создаем коллекцию на ВСЕХ шардах
+                println!("📦 Bucket-based: создание коллекции '{}' на всех шардах", name);
 
-        // Регистрируем коллекцию в метаданных
-        {
-            let mut shard_manager = self.shard_manager.write().await;
-            shard_manager.add_collection_to_shard(&shard_id, name)?;
-        }
-
-        Ok(())
-    }
-
-    /// Удаляет коллекцию с учетом шардирования
-    pub async fn delete_collection(&self, name: String) -> Result<(), String> {
-        // Определяем, на каком шарде находится коллекция
-        let shard_id = {
-            let shard_manager = self.shard_manager.read().await;
-            shard_manager.get_shard_for_collection(&name)?
-        };
-
-        println!("🗑️  Удаление коллекции '{}' с шарда {}", name, shard_id);
-
-        // Удаляем коллекцию ТОЛЬКО с целевого шарда
-        if let Some(ref multi_client) = self.multi_shard_client {
-            if let Some(client) = multi_client.get_client(&shard_id) {
-                match client.delete_collection(name.clone()).await {
-                    Ok(response) => {
-                if !response.success {
-                            if let Some(error) = response.error {
-                                eprintln!("⚠️  Ошибка удаления коллекции на шарде {}: {}", shard_id, error);
+                if let Some(ref multi_client) = self.multi_shard_client {
+                    let results = multi_client.create_collection_on_all_shards(
+                        name.clone(), 
+                        lsh_metric.clone(), 
+                        vector_dimension
+                    ).await;
+                    
+                    println!("📡 Создание коллекции на {} шардах: {}/{} успешно", 
+                             results.results.len(), results.successful_operations, results.results.len());
+                    
+                    let mut has_errors = false;
+                    for response in &results.results {
+                        if !response.success {
+                            if let Some(error) = &response.error {
+                                eprintln!("⚠️  Ошибка создания коллекции на шарде {}: {}", response.shard_id, error);
+                                has_errors = true;
                             }
                         } else {
-                            println!("✅ Коллекция '{}' удалена с шарда {}", name, shard_id);
+                            println!("✅ Коллекция '{}' создана на шарде {}", name, response.shard_id);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("⚠️  Ошибка связи с шардом {}: {}", shard_id, e);
+                    
+                    if has_errors && results.successful_operations == 0 {
+                        return Err("Не удалось создать коллекцию ни на одном шарде".to_string());
+                    }
+                } else {
+                    return Err("Клиент для множественных шардов не инициализирован".to_string());
+                }
+
+                // Регистрируем коллекцию на всех шардах в метаданных
+                {
+                    let mut shard_manager = self.shard_manager.write().await;
+                    let shard_ids: Vec<String> = shard_manager.shards.keys().cloned().collect();
+                    for shard_id in shard_ids {
+                        let _ = shard_manager.add_collection_to_shard(&shard_id, name.clone());
                     }
                 }
+
+                println!("✅ Коллекция '{}' готова к bucket-based шардированию", name);
+                Ok(())
             }
         }
-
-        // Удаляем коллекцию из метаданных
-        {
-            let mut shard_manager = self.shard_manager.write().await;
-            shard_manager.remove_collection_from_shard(&shard_id, &name)?;
-        }
-
-        Ok(())
     }
 
-    /// Добавляет вектор с учетом шардирования
+    /// Удаляет коллекцию с учетом режима шардирования
+    pub async fn delete_collection(&self, name: String) -> Result<(), String> {
+        let sharding_mode = {
+            let shard_manager = self.shard_manager.read().await;
+            shard_manager.get_sharding_mode().clone()
+        };
+
+        match sharding_mode {
+            ShardingMode::CollectionBased => {
+                // Collection-based: удаляем коллекцию только с одного шарда
+                let shard_id = {
+                    let shard_manager = self.shard_manager.read().await;
+                    shard_manager.get_shard_for_collection(&name)?
+                };
+
+                println!("🗑️  Collection-based: удаление коллекции '{}' с шарда {}", name, shard_id);
+
+                if let Some(ref multi_client) = self.multi_shard_client {
+                    if let Some(client) = multi_client.get_client(&shard_id) {
+                        match client.delete_collection(name.clone()).await {
+                            Ok(response) => {
+                                if !response.success {
+                                    if let Some(error) = response.error {
+                                        eprintln!("⚠️  Ошибка удаления коллекции на шарде {}: {}", shard_id, error);
+                                    }
+                                } else {
+                                    println!("✅ Коллекция '{}' удалена с шарда {}", name, shard_id);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("⚠️  Ошибка связи с шардом {}: {}", shard_id, e);
+                            }
+                        }
+                    }
+                }
+
+                // Удаляем коллекцию из метаданных
+                {
+                    let mut shard_manager = self.shard_manager.write().await;
+                    shard_manager.remove_collection_from_shard(&shard_id, &name)?;
+                }
+
+                Ok(())
+            }
+            ShardingMode::BucketBased => {
+                // Bucket-based: удаляем коллекцию со ВСЕХ шардов
+                println!("🗑️  Bucket-based: удаление коллекции '{}' со всех шардов", name);
+
+                if let Some(ref multi_client) = self.multi_shard_client {
+                    let results = multi_client.delete_collection_on_all_shards(name.clone()).await;
+                    
+                    println!("📡 Удаление коллекции с {} шардов: {}/{} успешно", 
+                             results.results.len(), results.successful_operations, results.results.len());
+                    
+                    for response in &results.results {
+                        if !response.success {
+                            if let Some(error) = &response.error {
+                                eprintln!("⚠️  Ошибка удаления коллекции на шарде {}: {}", response.shard_id, error);
+                            }
+                        } else {
+                            println!("✅ Коллекция '{}' удалена с шарда {}", name, response.shard_id);
+                        }
+                    }
+                }
+
+                // Удаляем коллекцию из метаданных всех шардов
+                {
+                    let mut shard_manager = self.shard_manager.write().await;
+                    let shard_ids: Vec<String> = shard_manager.shards.keys().cloned().collect();
+                    for shard_id in shard_ids {
+                        let _ = shard_manager.remove_collection_from_shard(&shard_id, &name);
+                    }
+                }
+
+                Ok(())
+            }
+        }
+    }
+
+    /// Добавляет вектор с учетом режима шардирования
     pub async fn add_vector(
         &self,
         collection_name: String,
         embedding: Vec<f32>,
         metadata: HashMap<String, String>,
     ) -> Result<u64, String> {
-        // Определяем шард для коллекции
-        let shard_id = {
+        let sharding_mode = {
             let shard_manager = self.shard_manager.read().await;
-            shard_manager.get_shard_for_collection(&collection_name)?
+            shard_manager.get_sharding_mode().clone()
         };
 
         // Вычисляем приблизительный размер вектора (embedding + метаданные)
@@ -467,38 +575,101 @@ impl ShardCoordinator {
             + metadata.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>() as i64
             + 100; // overhead для других полей
 
-        // Отправляем вектор на соответствующий шард
-        if let Some(ref multi_client) = self.multi_shard_client {
-            match multi_client.add_vector_on_shard(&shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
-                Ok(response) => {
-                    if response.success {
-                        // Получаем ID вектора из ответа
-                        let vector_id = response.data
-                            .and_then(|data| data.get("id").and_then(|v| v.as_u64()))
-                            .unwrap_or(0);
-                        println!("📡 Вектор добавлен на шард {}: ID={}", shard_id, vector_id);
-                        
-                        // Обновляем использование пространства на шарде
-                        {
-                            let mut shard_manager = self.shard_manager.write().await;
-                            let _ = shard_manager.update_shard_usage(&shard_id, vector_size);
+        match sharding_mode {
+            ShardingMode::CollectionBased => {
+                // Collection-based: роутинг по имени коллекции
+                let shard_id = {
+                    let shard_manager = self.shard_manager.read().await;
+                    shard_manager.get_shard_for_collection(&collection_name)?
+                };
+
+                println!("🎯 Collection-based: вектор в коллекции '{}' -> шард '{}'", 
+                         collection_name, shard_id);
+
+                if let Some(ref multi_client) = self.multi_shard_client {
+                    match multi_client.add_vector_on_shard(&shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
+                        Ok(response) => {
+                            if response.success {
+                                let vector_id = response.data
+                                    .and_then(|data| data.get("id").and_then(|v| v.as_u64()))
+                                    .unwrap_or(0);
+                                println!("📡 Вектор добавлен на шард {} (collection-based): ID={}", shard_id, vector_id);
+                                
+                                // Обновляем использование пространства на шарде
+                                {
+                                    let mut shard_manager = self.shard_manager.write().await;
+                                    let _ = shard_manager.update_shard_usage(&shard_id, vector_size);
+                                }
+                                
+                                Ok(vector_id)
+                            } else {
+                                if let Some(error) = response.error {
+                                    Err(format!("Ошибка добавления вектора на шард {}: {}", shard_id, error))
+                                } else {
+                                    Err("Неизвестная ошибка добавления вектора".to_string())
+                                }
+                            }
                         }
-                        
-                        Ok(vector_id)
-                    } else {
-                        if let Some(error) = response.error {
-                            Err(format!("Ошибка добавления вектора на шард {}: {}", shard_id, error))
-                        } else {
-                            Err("Неизвестная ошибка добавления вектора".to_string())
+                        Err(e) => {
+                            Err(format!("Ошибка связи с шардом {}: {}", shard_id, e))
                         }
                     }
-                }
-                Err(e) => {
-                    Err(format!("Ошибка связи с шардом {}: {}", shard_id, e))
+                } else {
+                    Err("Клиент для множественных шардов не инициализирован".to_string())
                 }
             }
-        } else {
-            Err("Клиент для множественных шардов не инициализирован".to_string())
+            ShardingMode::BucketBased => {
+                // Bucket-based: роутинг по хешу embedding
+                let embedding_hash = {
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    for &val in &embedding {
+                        val.to_bits().hash(&mut hasher);
+                    }
+                    hasher.finish()
+                };
+
+                let shard_id = {
+                    let shard_manager = self.shard_manager.read().await;
+                    shard_manager.get_shard_for_bucket(embedding_hash)?
+                };
+
+                println!("🎯 Bucket-based: collection='{}', embedding_hash={}, target_shard='{}'", 
+                         collection_name, embedding_hash, shard_id);
+
+                if let Some(ref multi_client) = self.multi_shard_client {
+                    match multi_client.add_vector_on_shard(&shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
+                        Ok(response) => {
+                            if response.success {
+                                let vector_id = response.data
+                                    .and_then(|data| data.get("id").and_then(|v| v.as_u64()))
+                                    .unwrap_or(0);
+                                println!("📡 Вектор добавлен на шард {} (bucket-based): ID={}", shard_id, vector_id);
+                                
+                                // Обновляем использование пространства на шарде
+                                {
+                                    let mut shard_manager = self.shard_manager.write().await;
+                                    let _ = shard_manager.update_shard_usage(&shard_id, vector_size);
+                                }
+                                
+                                Ok(vector_id)
+                            } else {
+                                if let Some(error) = response.error {
+                                    Err(format!("Ошибка добавления вектора на шард {}: {}", shard_id, error))
+                                } else {
+                                    Err("Неизвестная ошибка добавления вектора".to_string())
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            Err(format!("Ошибка связи с шардом {}: {}", shard_id, e))
+                        }
+                    }
+                } else {
+                    Err("Клиент для множественных шардов не инициализирован".to_string())
+                }
+            }
         }
     }
 
@@ -649,30 +820,69 @@ impl ShardCoordinator {
     ) -> Result<Vec<u64>, String> {
         let mut all_results = Vec::new();
 
-        // Фильтруем на удаленных шардах
-        if let Some(ref multi_client) = self.multi_shard_client {
-            let shard_id = {
-                let shard_manager = self.shard_manager.read().await;
-                shard_manager.get_shard_for_collection(&collection_name)?
-            };
+        let sharding_mode = {
+            let shard_manager = self.shard_manager.read().await;
+            shard_manager.get_sharding_mode().clone()
+        };
 
-            if let Some(client) = multi_client.get_client(&shard_id) {
-                match client.filter_by_metadata(collection_name.clone(), filters.clone()).await {
-                    Ok(response) => {
-                        if response.success {
-                            if let Some(data) = response.data {
-                                if let Some(vector_ids) = data.get("vector_ids").and_then(|v| v.as_array()) {
-                                    for id in vector_ids {
-                                        if let Some(vector_id) = id.as_u64() {
-                                            all_results.push(vector_id);
+        if let Some(ref multi_client) = self.multi_shard_client {
+            match sharding_mode {
+                ShardingMode::CollectionBased => {
+                    // Collection-based: фильтруем только на одном шарде
+                    let shard_id = {
+                        let shard_manager = self.shard_manager.read().await;
+                        shard_manager.get_shard_for_collection(&collection_name)?
+                    };
+
+                    if let Some(client) = multi_client.get_client(&shard_id) {
+                        match client.filter_by_metadata(collection_name.clone(), filters.clone()).await {
+                            Ok(response) => {
+                                if response.success {
+                                    if let Some(data) = response.data {
+                                        if let Some(vector_ids) = data.get("vector_ids").and_then(|v| v.as_array()) {
+                                            for id in vector_ids {
+                                                if let Some(vector_id) = id.as_u64() {
+                                                    all_results.push(vector_id);
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
+                            Err(e) => {
+                                eprintln!("⚠️  Ошибка фильтрации на шарде {}: {}", shard_id, e);
+                            }
                         }
                     }
-                    Err(e) => {
-                        eprintln!("⚠️  Ошибка фильтрации на шарде {}: {}", shard_id, e);
+                }
+                ShardingMode::BucketBased => {
+                    // Bucket-based: запрашиваем все шарды
+                    let shard_ids = {
+                        let shard_manager = self.shard_manager.read().await;
+                        shard_manager.get_active_shards()
+                    };
+
+                    for shard_id in shard_ids {
+                        if let Some(client) = multi_client.get_client(&shard_id) {
+                            match client.filter_by_metadata(collection_name.clone(), filters.clone()).await {
+                                Ok(response) => {
+                                    if response.success {
+                                        if let Some(data) = response.data {
+                                            if let Some(vector_ids) = data.get("vector_ids").and_then(|v| v.as_array()) {
+                                                for id in vector_ids {
+                                                    if let Some(vector_id) = id.as_u64() {
+                                                        all_results.push(vector_id);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("⚠️  Ошибка фильтрации на шарде {}: {}", shard_id, e);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1092,56 +1302,75 @@ impl ShardCoordinator {
         Ok(())
     }
 
-    /// Получает коллекцию по имени
+    /// Получает коллекцию по имени (bucket-based шардирование)
+    /// Ищет на любом шарде, так как коллекция существует на всех шардах
     pub async fn get_collection(&self, name: String) -> Result<Option<crate::core::objects::Collection>, String> {
-        // Определяем, на каком шарде находится коллекция
-        let shard_id = {
+        let sharding_mode = {
             let shard_manager = self.shard_manager.read().await;
-            shard_manager.get_shard_for_collection(&name)?
+            shard_manager.get_sharding_mode().clone()
         };
 
-        // Получаем коллекцию с нужного шарда
         if let Some(ref multi_client) = self.multi_shard_client {
-            if let Some(client) = multi_client.get_client(&shard_id) {
-                let request = crate::core::shard_client::ShardRequest {
-                    operation: "get_collection".to_string(),
-                    collection: Some(name.clone()),
-                    vector_id: None,
-                    embedding: None,
-                    metadata: None,
-                    query: None,
-                    k: None,
-                    filters: None,
-                };
-                match client.send_request(request).await {
-                    Ok(response) => {
-                        if response.success {
-                            if let Some(data) = response.data {
-                                // Парсим данные коллекции из ответа
-                                if let (Some(collection_name), Some(metric_str), Some(dimension)) = (
-                                    data.get("name").and_then(|v| v.as_str()),
-                                    data.get("metric").and_then(|v| v.as_str()),
-                                    data.get("dimension").and_then(|v| v.as_u64()),
-                                ) {
-                                    // Парсим LSH метрику
-                                    let metric = match metric_str {
-                                        "Cosine" => crate::core::lsh::LSHMetric::Cosine,
-                                        "Euclidean" => crate::core::lsh::LSHMetric::Euclidean,
-                                        "Manhattan" => crate::core::lsh::LSHMetric::Manhattan,
-                                        _ => return Ok(None),
-                                    };
+            let shard_ids_to_check: Vec<String> = match sharding_mode {
+                ShardingMode::CollectionBased => {
+                    // Collection-based: запрашиваем только один целевой шард
+                    let shard_id = {
+                        let shard_manager = self.shard_manager.read().await;
+                        match shard_manager.get_shard_for_collection(&name) {
+                            Ok(id) => vec![id],
+                            Err(_) => vec![], // Если не удалось определить шард, возвращаем пустой вектор
+                        }
+                    };
+                    shard_id
+                }
+                ShardingMode::BucketBased => {
+                    // Bucket-based: коллекция может быть на любом шарде
+                    multi_client.iter_clients().map(|(id, _)| id.clone()).collect()
+                }
+            };
 
-                                    return Ok(Some(crate::core::objects::Collection::new(
-                                        Some(collection_name.to_string()),
-                                        metric,
-                                        dimension as usize
-                                    )));
+            for shard_id in shard_ids_to_check {
+                if let Some(client) = multi_client.get_client(&shard_id) {
+                    let request = crate::core::shard_client::ShardRequest {
+                        operation: "get_collection".to_string(),
+                        collection: Some(name.clone()),
+                        vector_id: None,
+                        embedding: None,
+                        metadata: None,
+                        query: None,
+                        k: None,
+                        filters: None,
+                    };
+                    match client.send_request(request).await {
+                        Ok(response) => {
+                            if response.success {
+                                if let Some(data) = response.data {
+                                    // Парсим данные коллекции из ответа
+                                    if let (Some(collection_name), Some(metric_str), Some(dimension)) = (
+                                        data.get("name").and_then(|v| v.as_str()),
+                                        data.get("metric").and_then(|v| v.as_str()),
+                                        data.get("dimension").and_then(|v| v.as_u64()),
+                                    ) {
+                                        // Парсим LSH метрику
+                                        let metric = match metric_str {
+                                            "Cosine" => crate::core::lsh::LSHMetric::Cosine,
+                                            "Euclidean" => crate::core::lsh::LSHMetric::Euclidean,
+                                            "Manhattan" => crate::core::lsh::LSHMetric::Manhattan,
+                                            _ => continue,
+                                        };
+
+                                        return Ok(Some(crate::core::objects::Collection::new(
+                                            Some(collection_name.to_string()),
+                                            metric,
+                                            dimension as usize
+                                        )));
+                                    }
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        eprintln!("⚠️  Ошибка получения коллекции с шарда {}: {}", shard_id, e);
+                        Err(e) => {
+                            eprintln!("⚠️  Ошибка получения коллекции с шарда {}: {}", shard_id, e);
+                        }
                     }
                 }
             }
@@ -1258,7 +1487,7 @@ mod tests {
     fn test_hash_based_routing_stability() {
         // Проверяем, что хеш-роутинг стабилен при повторных вызовах
         let shards = create_test_shards();
-        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let collection_name = "test_collection";
         
@@ -1275,7 +1504,7 @@ mod tests {
     fn test_hash_based_routing_distribution() {
         // Проверяем, что разные коллекции распределяются по разным шардам
         let shards = create_test_shards();
-        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let mut shard_usage = std::collections::HashMap::new();
         
@@ -1301,10 +1530,65 @@ mod tests {
     }
 
     #[test]
+    fn test_hash_distribution_with_two_shards() {
+        // Тест для реальных условий: 2 шарда
+        let shards = vec![
+            ShardConfig {
+                id: "shard1".to_string(),
+                host: "localhost".to_string(),
+                port: 8081,
+                description: Some("Shard 1".to_string()),
+            },
+            ShardConfig {
+                id: "shard2".to_string(),
+                host: "localhost".to_string(),
+                port: 8082,
+                description: Some("Shard 2".to_string()),
+            },
+        ];
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
+
+        let test_names = vec![
+            "my_documents", "users", "products", "orders", "images",
+            "videos", "posts", "comments", "messages", "notifications",
+            "analytics", "logs", "collection_0", "collection_1", "test",
+        ];
+
+        let mut shard_usage = std::collections::HashMap::new();
+        
+        println!("\n📊 Распределение коллекций по шардам:");
+        for name in &test_names {
+            let shard_id = manager.get_shard_for_collection(name).unwrap();
+            println!("  {} -> {}", name, shard_id);
+            *shard_usage.entry(shard_id).or_insert(0) += 1;
+        }
+
+        println!("\n📈 Статистика:");
+        for (shard_id, count) in &shard_usage {
+            println!("  {}: {} коллекций ({:.1}%)", 
+                     shard_id, count, (*count as f64 / test_names.len() as f64) * 100.0);
+        }
+
+        // Проверяем, что оба шарда используются
+        assert_eq!(shard_usage.len(), 2, "Оба шарда должны быть задействованы");
+        
+        // Проверяем, что нет экстремального дисбаланса (не менее 20% на каждый шард)
+        for (shard_id, count) in shard_usage.iter() {
+            let percentage = (*count as f64 / test_names.len() as f64) * 100.0;
+            assert!(
+                percentage >= 20.0,
+                "Шард {} получил слишком мало коллекций: {:.1}%",
+                shard_id,
+                percentage
+            );
+        }
+    }
+
+    #[test]
     fn test_range_based_routing_stability() {
         // Проверяем, что диапазонный роутинг стабилен
         let shards = create_test_shards();
-        let manager = ShardManager::new(shards, RoutingStrategy::RangeBased);
+        let manager = ShardManager::new(shards, RoutingStrategy::RangeBased, ShardingMode::CollectionBased);
 
         let collection_name = "test_collection";
         
@@ -1318,7 +1602,7 @@ mod tests {
     fn test_range_based_routing_different_names() {
         // Проверяем, что коллекции с разными первыми буквами могут попасть на разные шарды
         let shards = create_test_shards();
-        let manager = ShardManager::new(shards, RoutingStrategy::RangeBased);
+        let manager = ShardManager::new(shards, RoutingStrategy::RangeBased, ShardingMode::CollectionBased);
 
         let mut shard_usage = std::collections::HashMap::new();
         
@@ -1340,7 +1624,7 @@ mod tests {
     fn test_bucket_routing_stability() {
         // Проверяем, что роутинг бакетов стабилен
         let shards = create_test_shards();
-        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let bucket_id = 12345u64;
         
@@ -1355,7 +1639,7 @@ mod tests {
     #[test]
     fn test_empty_shards_error() {
         // Проверяем, что пустой список шардов возвращает ошибку
-        let manager = ShardManager::new(vec![], RoutingStrategy::HashBased);
+        let manager = ShardManager::new(vec![], RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let result = manager.get_shard_for_collection("test");
         assert!(result.is_err());
@@ -1385,7 +1669,7 @@ mod tests {
     fn test_replication_factor() {
         // Проверяем, что репликация работает корректно
         let shards = create_test_shards();
-        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let bucket_id = 12345u64;
         let shards_for_bucket = manager.get_shards_for_bucket(bucket_id).unwrap();
@@ -1409,7 +1693,7 @@ mod tests {
     fn test_get_active_shards() {
         // Проверяем получение активных шардов
         let shards = create_test_shards();
-        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let active_shards = manager.get_active_shards();
         assert_eq!(active_shards.len(), 3);
@@ -1419,7 +1703,7 @@ mod tests {
     fn test_update_shard_status() {
         // Проверяем обновление статуса шарда
         let shards = create_test_shards();
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let result = manager.update_shard_status("shard1", ShardStatus::Maintenance);
         assert!(result.is_ok());
@@ -1432,7 +1716,7 @@ mod tests {
     fn test_add_collection_to_shard() {
         // Проверяем добавление коллекции к шарду
         let shards = create_test_shards();
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let result = manager.add_collection_to_shard("shard1", "test_collection".to_string());
         assert!(result.is_ok());
@@ -1445,7 +1729,7 @@ mod tests {
     fn test_update_shard_usage() {
         // Проверяем обновление использования пространства
         let shards = create_test_shards();
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         // Начальное значение used_space = 0
         let shard_info = manager.get_shard_info("shard1").unwrap();
@@ -1477,7 +1761,7 @@ mod tests {
     fn test_set_shard_usage() {
         // Проверяем установку использования пространства
         let shards = create_test_shards();
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let result = manager.set_shard_usage("shard1", 5000);
         assert!(result.is_ok());
@@ -1490,7 +1774,7 @@ mod tests {
     fn test_get_shard_load() {
         // Проверяем получение коэффициента загрузки
         let shards = create_test_shards();
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         // Устанавливаем used_space = 500000 (capacity = 1000000 по умолчанию)
         manager.set_shard_usage("shard1", 500000).unwrap();
@@ -1503,7 +1787,7 @@ mod tests {
     fn test_get_overloaded_shards() {
         // Проверяем получение перегруженных шардов
         let shards = create_test_shards();
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         // Устанавливаем разную загрузку на шардах
         manager.set_shard_usage("shard1", 900000).unwrap(); // 90% - перегружен
@@ -1520,7 +1804,7 @@ mod tests {
     fn test_get_underloaded_shards() {
         // Проверяем получение недогруженных шардов
         let shards = create_test_shards();
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         // Устанавливаем разную загрузку на шардах
         manager.set_shard_usage("shard1", 900000).unwrap(); // 90% - перегружен
@@ -1537,7 +1821,7 @@ mod tests {
     fn test_balancing_detection() {
         // Проверяем определение необходимости балансировки
         let shards = create_test_shards();
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         // Создаем дисбаланс: shard1 перегружен, shard3 недогружен
         manager.set_shard_usage("shard1", 900000).unwrap(); // 90%
@@ -1556,7 +1840,7 @@ mod tests {
     fn test_shard_usage_with_invalid_shard() {
         // Проверяем обработку ошибок при работе с несуществующим шардом
         let shards = create_test_shards();
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
 
         let result = manager.update_shard_usage("non_existent_shard", 1000);
         assert!(result.is_err());
@@ -1579,7 +1863,7 @@ mod tests {
             description: Some("Shard with zero capacity".to_string()),
         };
         
-        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
         
         // Устанавливаем capacity в 0
         if let Some(shard) = manager.shards.get_mut("shard_zero_capacity") {
@@ -1588,5 +1872,118 @@ mod tests {
 
         let load = manager.get_shard_load("shard_zero_capacity").unwrap();
         assert_eq!(load, 0.0); // Для нулевой емкости load должен быть 0
+    }
+
+    #[test]
+    fn test_bucket_based_routing_distribution() {
+        // Тест для bucket-based шардирования
+        let shards = vec![
+            ShardConfig {
+                id: "shard1".to_string(),
+                host: "localhost".to_string(),
+                port: 8081,
+                description: Some("Shard 1".to_string()),
+            },
+            ShardConfig {
+                id: "shard2".to_string(),
+                host: "localhost".to_string(),
+                port: 8082,
+                description: Some("Shard 2".to_string()),
+            },
+        ];
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
+
+        let mut shard_usage = std::collections::HashMap::new();
+        
+        // Имитируем распределение бакетов (bucket_id от 0 до 99)
+        println!("\n📦 Bucket-based шардирование: распределение бакетов");
+        for bucket_id in 0..100 {
+            let shard_id = manager.get_shard_for_bucket(bucket_id).unwrap();
+            *shard_usage.entry(shard_id).or_insert(0) += 1;
+        }
+
+        println!("\n📊 Распределение 100 бакетов:");
+        for (shard_id, count) in &shard_usage {
+            println!("  {}: {} бакетов ({:.1}%)", 
+                     shard_id, count, (*count as f64 / 100.0) * 100.0);
+        }
+
+        // Проверяем, что оба шарда используются
+        assert_eq!(shard_usage.len(), 2, "Оба шарда должны быть задействованы");
+        
+        // Проверяем относительно равномерное распределение (40-60%)
+        for (shard_id, count) in shard_usage.iter() {
+            assert!(
+                *count >= 40 && *count <= 60,
+                "Шард {} получил неравномерное распределение: {} бакетов",
+                shard_id,
+                count
+            );
+        }
+    }
+
+    #[test]
+    fn test_bucket_routing_consistency() {
+        // Проверяем, что один и тот же bucket_id всегда попадает на один шард
+        let shards = vec![
+            ShardConfig {
+                id: "shard1".to_string(),
+                host: "localhost".to_string(),
+                port: 8081,
+                description: Some("Shard 1".to_string()),
+            },
+            ShardConfig {
+                id: "shard2".to_string(),
+                host: "localhost".to_string(),
+                port: 8082,
+                description: Some("Shard 2".to_string()),
+            },
+        ];
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
+
+        // Проверяем несколько bucket_id
+        for bucket_id in &[0, 1, 100, 999, 12345, 67890] {
+            let shard1 = manager.get_shard_for_bucket(*bucket_id).unwrap();
+            let shard2 = manager.get_shard_for_bucket(*bucket_id).unwrap();
+            let shard3 = manager.get_shard_for_bucket(*bucket_id).unwrap();
+            
+            assert_eq!(shard1, shard2, "Bucket {} должен всегда попадать на один шард", bucket_id);
+            assert_eq!(shard2, shard3, "Bucket {} должен всегда попадать на один шард", bucket_id);
+            
+            println!("✓ Bucket {} -> {}", bucket_id, shard1);
+        }
+    }
+
+    #[test]
+    fn test_get_shards_for_bucket_replication() {
+        // Проверяем репликацию бакетов на несколько шардов
+        let shards = create_test_shards(); // 3 шарда
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased, ShardingMode::CollectionBased);
+
+        let bucket_id = 42u64;
+        let shard_ids = manager.get_shards_for_bucket(bucket_id).unwrap();
+
+        println!("\n🔄 Репликация bucket {}: {:?}", bucket_id, shard_ids);
+
+        // Проверяем, что возвращается несколько шардов (primary + replicas)
+        assert!(
+            shard_ids.len() >= 1,
+            "Должен быть хотя бы один шард (primary)"
+        );
+
+        // Проверяем, что все шарды уникальны
+        let unique_shards: std::collections::HashSet<_> = shard_ids.iter().collect();
+        assert_eq!(
+            unique_shards.len(),
+            shard_ids.len(),
+            "Все шарды должны быть уникальны"
+        );
+
+        // Проверяем, что первый шард - это primary (детерминированный по bucket_id)
+        let primary_shard = manager.get_shard_for_bucket(bucket_id).unwrap();
+        assert_eq!(
+            shard_ids[0], primary_shard,
+            "Первый шард должен быть primary"
+        );
     }
 }
