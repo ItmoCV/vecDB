@@ -117,7 +117,11 @@ impl ShardManager {
                 let mut shard_ids: Vec<_> = self.shards.keys().cloned().collect();
                 shard_ids.sort();
                 
-                Ok(shard_ids[shard_index].clone())
+                let selected_shard = &shard_ids[shard_index];
+                println!("🔍 Hash-routing: collection='{}', hash={}, shards={}, index={}, selected='{}'", 
+                         collection_name, hash, shard_count, shard_index, selected_shard);
+                
+                Ok(selected_shard.clone())
             }
             RoutingStrategy::RangeBased => {
                 // Диапазонный роутинг: распределение по первой букве имени коллекции
@@ -367,34 +371,37 @@ impl ShardCoordinator {
         lsh_metric: LSHMetric,
         vector_dimension: usize,
     ) -> Result<(), String> {
+        // Определяем целевой шард для коллекции
         let shard_id = {
             let shard_manager = self.shard_manager.read().await;
-            shard_manager.get_shard_for_collection(&name)?
+            let target_shard = shard_manager.get_shard_for_collection(&name)?;
+            println!("🎯 Роутинг коллекции '{}' на шард: {}", name, target_shard);
+            target_shard
         };
 
-        // Отправляем команду создания коллекции на все шарды
+        // Создаем коллекцию ТОЛЬКО на целевом шарде
         if let Some(ref multi_client) = self.multi_shard_client {
-            // Создаем коллекцию на всех шардах
-            let results = multi_client.create_collection_on_all_shards(
-                name.clone(), 
-                lsh_metric.clone(), 
-                vector_dimension
-            ).await;
-            
-            println!("📡 Создание коллекции на {} шардах: {}/{} успешно", 
-                     results.results.len(), results.successful_operations, results.results.len());
-            
-            // Проверяем результаты
-            for response in &results.results {
+            if let Some(client) = multi_client.get_client(&shard_id) {
+                match client.create_collection(name.clone(), lsh_metric, vector_dimension).await {
+                    Ok(response) => {
                 if !response.success {
-                    if let Some(error) = &response.error {
-                        eprintln!("⚠️  Ошибка создания коллекции на шарде {}: {}", response.shard_id, error);
+                            return Err(format!("Ошибка создания коллекции на шарде {}: {:?}", 
+                                             shard_id, response.error));
+                        }
+                        println!("✅ Коллекция '{}' создана на шарде {}", name, shard_id);
+                    }
+                    Err(e) => {
+                        return Err(format!("Ошибка связи с шардом {}: {}", shard_id, e));
                     }
                 }
+            } else {
+                return Err(format!("Клиент для шарда {} не найден", shard_id));
             }
+        } else {
+            return Err("Клиент для множественных шардов не инициализирован".to_string());
         }
 
-        // Обновляем информацию о шарде
+        // Регистрируем коллекцию в метаданных
         {
             let mut shard_manager = self.shard_manager.write().await;
             shard_manager.add_collection_to_shard(&shard_id, name)?;
@@ -405,30 +412,38 @@ impl ShardCoordinator {
 
     /// Удаляет коллекцию с учетом шардирования
     pub async fn delete_collection(&self, name: String) -> Result<(), String> {
-        // Отправляем команду удаления коллекции на все шарды
+        // Определяем, на каком шарде находится коллекция
+        let shard_id = {
+            let shard_manager = self.shard_manager.read().await;
+            shard_manager.get_shard_for_collection(&name)?
+        };
+
+        println!("🗑️  Удаление коллекции '{}' с шарда {}", name, shard_id);
+
+        // Удаляем коллекцию ТОЛЬКО с целевого шарда
         if let Some(ref multi_client) = self.multi_shard_client {
-            let results = multi_client.delete_collection_on_all_shards(name.clone()).await;
-            
-            println!("📡 Удаление коллекции на {} шардах: {}/{} успешно", 
-                     results.results.len(), results.successful_operations, results.results.len());
-            
-            // Проверяем результаты
-            for response in &results.results {
+            if let Some(client) = multi_client.get_client(&shard_id) {
+                match client.delete_collection(name.clone()).await {
+                    Ok(response) => {
                 if !response.success {
-                    if let Some(error) = &response.error {
-                        eprintln!("⚠️  Ошибка удаления коллекции на шарде {}: {}", response.shard_id, error);
+                            if let Some(error) = response.error {
+                                eprintln!("⚠️  Ошибка удаления коллекции на шарде {}: {}", shard_id, error);
+                            }
+                        } else {
+                            println!("✅ Коллекция '{}' удалена с шарда {}", name, shard_id);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️  Ошибка связи с шардом {}: {}", shard_id, e);
                     }
                 }
             }
         }
 
-        // Обновляем информацию о шардах
+        // Удаляем коллекцию из метаданных
         {
             let mut shard_manager = self.shard_manager.write().await;
-            let shard_ids: Vec<String> = shard_manager.shards.keys().cloned().collect();
-            for shard_id in shard_ids {
-                let _ = shard_manager.remove_collection_from_shard(&shard_id, &name);
-            }
+            shard_manager.remove_collection_from_shard(&shard_id, &name)?;
         }
 
         Ok(())
@@ -945,12 +960,12 @@ impl ShardCoordinator {
         
         // Освобождаем shard_manager для анализа
         let shard_loads = {
-            let shard_manager = self.shard_manager.read().await;
-            
-            // Анализируем нагрузку на каждый шард
+        let shard_manager = self.shard_manager.read().await;
+        
+        // Анализируем нагрузку на каждый шард
             let mut loads: Vec<(String, f64)> = Vec::new();
-            for (shard_id, shard) in &shard_manager.shards {
-                if shard.info.status == ShardStatus::Active {
+        for (shard_id, shard) in &shard_manager.shards {
+            if shard.info.status == ShardStatus::Active {
                     let load = if shard.info.capacity == 0 {
                         0.0
                     } else {
@@ -1079,9 +1094,15 @@ impl ShardCoordinator {
 
     /// Получает коллекцию по имени
     pub async fn get_collection(&self, name: String) -> Result<Option<crate::core::objects::Collection>, String> {
-        // Ищем коллекцию на всех шардах
+        // Определяем, на каком шарде находится коллекция
+        let shard_id = {
+            let shard_manager = self.shard_manager.read().await;
+            shard_manager.get_shard_for_collection(&name)?
+        };
+
+        // Получаем коллекцию с нужного шарда
         if let Some(ref multi_client) = self.multi_shard_client {
-            for (shard_id, client) in multi_client.iter_clients() {
+            if let Some(client) = multi_client.get_client(&shard_id) {
                 let request = crate::core::shard_client::ShardRequest {
                     operation: "get_collection".to_string(),
                     collection: Some(name.clone()),
@@ -1107,7 +1128,7 @@ impl ShardCoordinator {
                                         "Cosine" => crate::core::lsh::LSHMetric::Cosine,
                                         "Euclidean" => crate::core::lsh::LSHMetric::Euclidean,
                                         "Manhattan" => crate::core::lsh::LSHMetric::Manhattan,
-                                        _ => continue,
+                                        _ => return Ok(None),
                                     };
 
                                     return Ok(Some(crate::core::objects::Collection::new(
