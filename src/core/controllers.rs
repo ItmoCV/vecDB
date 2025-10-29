@@ -494,6 +494,9 @@ impl ConnectionController {
                 .route("/shard", post(crate::core::handlers::handle_shard_request))
                 .route("/health", axum::routing::get(crate::core::handlers::health_check))
                 .route("/stop", post(crate::core::handlers::stop))
+                .route("/shards/statistics", axum::routing::get(crate::core::handlers::get_shards_statistics))
+                .route("/shards/rebalance", post(crate::core::handlers::trigger_rebalance))
+                .route("/shards/health", axum::routing::get(crate::core::handlers::check_shards_health))
                 .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", load_openapi_spec()))
                 .with_state(app_state)
         } else {

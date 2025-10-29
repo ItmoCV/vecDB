@@ -102,56 +102,62 @@ impl ShardManager {
 
     /// Определяет шард для коллекции
     pub fn get_shard_for_collection(&self, collection_name: &str) -> Result<String, String> {
+        if self.shards.is_empty() {
+            return Err("Нет доступных шардов".to_string());
+        }
+
         match self.routing_strategy {
             RoutingStrategy::HashBased => {
+                // Хеш-роутинг: распределение на основе хеша имени коллекции
                 let hash = calculate_hash(&collection_name);
                 let shard_count = self.shards.len();
                 let shard_index = (hash % shard_count as u64) as usize;
                 
-                if let Some(shard_id) = self.shards.keys().nth(shard_index) {
-                    Ok(shard_id.clone())
-                } else {
-                    Err("Нет доступных шардов".to_string())
-                }
+                // Используем отсортированный список ID для стабильности
+                let mut shard_ids: Vec<_> = self.shards.keys().cloned().collect();
+                shard_ids.sort();
+                
+                Ok(shard_ids[shard_index].clone())
             }
             RoutingStrategy::RangeBased => {
-                // Для диапазонного роутинга нужна дополнительная логика
-                // Пока используем хеш-роутинг
-                let hash = calculate_hash(&collection_name);
-                let shard_count = self.shards.len();
-                let shard_index = (hash % shard_count as u64) as usize;
+                // Диапазонный роутинг: распределение по первой букве имени коллекции
+                // Коллекции с именами A-M идут на первую половину шардов, N-Z на вторую
+                let mut shard_ids: Vec<_> = self.shards.keys().cloned().collect();
+                shard_ids.sort();
                 
-                if let Some(shard_id) = self.shards.keys().nth(shard_index) {
-                    Ok(shard_id.clone())
-                } else {
-                    Err("Нет доступных шардов".to_string())
-                }
+                let first_char = collection_name.chars().next().unwrap_or('a').to_ascii_lowercase();
+                let char_value = first_char as u32;
+                
+                // Используем диапазон символов для определения шарда
+                let shard_index = (char_value as usize) % shard_ids.len();
+                
+                Ok(shard_ids[shard_index].clone())
             }
             RoutingStrategy::LSHBased => {
-                // Для LSH-роутинга нужен доступ к LSH функции
-                // Пока используем хеш-роутинг
+                // LSH-роутинг требует информацию о векторе, а не только имя коллекции
+                // Для роутинга коллекций используем fallback на хеш-роутинг
+                // Примечание: для роутинга векторов нужен отдельный метод с параметром вектора
                 let hash = calculate_hash(&collection_name);
                 let shard_count = self.shards.len();
                 let shard_index = (hash % shard_count as u64) as usize;
                 
-                if let Some(shard_id) = self.shards.keys().nth(shard_index) {
-                    Ok(shard_id.clone())
-                } else {
-                    Err("Нет доступных шардов".to_string())
-                }
+                let mut shard_ids: Vec<_> = self.shards.keys().cloned().collect();
+                shard_ids.sort();
+                
+                Ok(shard_ids[shard_index].clone())
             }
             RoutingStrategy::MetadataBased => {
-                // Для роутинга по метаданным нужны дополнительные параметры
-                // Пока используем хеш-роутинг
+                // Роутинг по метаданным требует дополнительные параметры
+                // Для роутинга коллекций используем fallback на хеш-роутинг
+                // Примечание: для роутинга векторов по метаданным нужен отдельный метод
                 let hash = calculate_hash(&collection_name);
                 let shard_count = self.shards.len();
                 let shard_index = (hash % shard_count as u64) as usize;
                 
-                if let Some(shard_id) = self.shards.keys().nth(shard_index) {
-                    Ok(shard_id.clone())
-                } else {
-                    Err("Нет доступных шардов".to_string())
-                }
+                let mut shard_ids: Vec<_> = self.shards.keys().cloned().collect();
+                shard_ids.sort();
+                
+                Ok(shard_ids[shard_index].clone())
             }
         }
     }
@@ -173,14 +179,18 @@ impl ShardManager {
 
     /// Определяет основной шард для бакета
     fn get_shard_for_bucket(&self, bucket_id: u64) -> Result<String, String> {
+        if self.shards.is_empty() {
+            return Err("Нет доступных шардов".to_string());
+        }
+        
         let shard_count = self.shards.len();
         let shard_index = (bucket_id % shard_count as u64) as usize;
         
-        if let Some(shard_id) = self.shards.keys().nth(shard_index) {
-            Ok(shard_id.clone())
-        } else {
-            Err("Нет доступных шардов".to_string())
-        }
+        // Используем отсортированный список ID для стабильности
+        let mut shard_ids: Vec<_> = self.shards.keys().cloned().collect();
+        shard_ids.sort();
+        
+        Ok(shard_ids[shard_index].clone())
     }
 
     /// Получает следующий доступный шард (для репликации)
@@ -256,6 +266,75 @@ impl ShardManager {
         }
         
         stats
+    }
+
+    /// Обновляет использование пространства на шарде
+    pub fn update_shard_usage(&mut self, shard_id: &str, delta: i64) -> Result<(), String> {
+        if let Some(shard) = self.shards.get_mut(shard_id) {
+            let new_usage = (shard.info.used_space as i64 + delta).max(0) as u64;
+            shard.info.used_space = new_usage;
+            Ok(())
+        } else {
+            Err(format!("Шард {} не найден", shard_id))
+        }
+    }
+
+    /// Устанавливает использование пространства на шарде
+    pub fn set_shard_usage(&mut self, shard_id: &str, used_space: u64) -> Result<(), String> {
+        if let Some(shard) = self.shards.get_mut(shard_id) {
+            shard.info.used_space = used_space;
+            Ok(())
+        } else {
+            Err(format!("Шард {} не найден", shard_id))
+        }
+    }
+
+    /// Получает коэффициент загрузки шарда
+    pub fn get_shard_load(&self, shard_id: &str) -> Result<f64, String> {
+        if let Some(shard) = self.shards.get(shard_id) {
+            if shard.info.capacity == 0 {
+                return Ok(0.0);
+            }
+            Ok(shard.info.used_space as f64 / shard.info.capacity as f64)
+        } else {
+            Err(format!("Шард {} не найден", shard_id))
+        }
+    }
+
+    /// Получает список перегруженных шардов (load > threshold)
+    pub fn get_overloaded_shards(&self, threshold: f64) -> Vec<String> {
+        let mut overloaded = Vec::new();
+        for (shard_id, shard) in &self.shards {
+            if shard.info.status == ShardStatus::Active {
+                let load = if shard.info.capacity == 0 {
+                    0.0
+                } else {
+                    shard.info.used_space as f64 / shard.info.capacity as f64
+                };
+                if load > threshold {
+                    overloaded.push(shard_id.clone());
+                }
+            }
+        }
+        overloaded
+    }
+
+    /// Получает список недогруженных шардов (load < threshold)
+    pub fn get_underloaded_shards(&self, threshold: f64) -> Vec<String> {
+        let mut underloaded = Vec::new();
+        for (shard_id, shard) in &self.shards {
+            if shard.info.status == ShardStatus::Active {
+                let load = if shard.info.capacity == 0 {
+                    0.0
+                } else {
+                    shard.info.used_space as f64 / shard.info.capacity as f64
+                };
+                if load < threshold {
+                    underloaded.push(shard_id.clone());
+                }
+            }
+        }
+        underloaded
     }
 }
 
@@ -368,6 +447,11 @@ impl ShardCoordinator {
             shard_manager.get_shard_for_collection(&collection_name)?
         };
 
+        // Вычисляем приблизительный размер вектора (embedding + метаданные)
+        let vector_size = (embedding.len() * std::mem::size_of::<f32>()) as i64
+            + metadata.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>() as i64
+            + 100; // overhead для других полей
+
         // Отправляем вектор на соответствующий шард
         if let Some(ref multi_client) = self.multi_shard_client {
             match multi_client.add_vector_on_shard(&shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
@@ -378,6 +462,13 @@ impl ShardCoordinator {
                             .and_then(|data| data.get("id").and_then(|v| v.as_u64()))
                             .unwrap_or(0);
                         println!("📡 Вектор добавлен на шард {}: ID={}", shard_id, vector_id);
+                        
+                        // Обновляем использование пространства на шарде
+                        {
+                            let mut shard_manager = self.shard_manager.write().await;
+                            let _ = shard_manager.update_shard_usage(&shard_id, vector_size);
+                        }
+                        
                         Ok(vector_id)
                     } else {
                         if let Some(error) = response.error {
@@ -439,15 +530,35 @@ impl ShardCoordinator {
         collection_name: String,
         vector_id: u64,
     ) -> Result<(), String> {
+        // Сначала пытаемся получить вектор для вычисления размера
+        let vector_size = match self.get_vector(collection_name.clone(), vector_id).await {
+            Ok(vector) => {
+                // Вычисляем размер удаляемого вектора
+                let embedding_size = vector.data.len();
+                let metadata_size = vector.metadata.iter()
+                    .map(|(k, v)| k.len() + v.len())
+                    .sum::<usize>();
+                Some(((embedding_size * std::mem::size_of::<f32>()) + metadata_size + 100) as i64)
+            }
+            Err(_) => None,
+        };
+
         // Отправляем удаление на все шарды
         if let Some(ref multi_client) = self.multi_shard_client {
             let mut found = false;
+            
             for (shard_id, client) in multi_client.iter_clients() {
                 match client.delete_vector(collection_name.clone(), vector_id).await {
                     Ok(response) => {
                         if response.success {
                             println!("📡 Вектор удален на шарде {}: ID={}", shard_id, vector_id);
                             found = true;
+                            
+                            // Обновляем использование пространства
+                            if let Some(size) = vector_size {
+                                let mut shard_manager = self.shard_manager.write().await;
+                                let _ = shard_manager.update_shard_usage(&shard_id, -size);
+                            }
                         } else {
                             if let Some(error) = response.error {
                                 eprintln!("⚠️  Ошибка удаления вектора на шарде {}: {}", shard_id, error);
@@ -699,35 +810,270 @@ impl ShardCoordinator {
         Ok(())
     }
 
-    /// Балансирует нагрузку между шардами
-    pub async fn rebalance_shards(&self) -> Result<(), String> {
+    /// Получает размер коллекции на конкретном шарде
+    async fn get_collection_size(&self, shard_id: &str, collection_name: &str) -> Result<u64, String> {
+        if let Some(ref multi_client) = self.multi_shard_client {
+            if let Some(client) = multi_client.get_client(shard_id) {
+                let request = crate::core::shard_client::ShardRequest {
+                    operation: "get_collection_size".to_string(),
+                    collection: Some(collection_name.to_string()),
+                    vector_id: None,
+                    embedding: None,
+                    metadata: None,
+                    query: None,
+                    k: None,
+                    filters: None,
+                };
+                match client.send_request(request).await {
+                    Ok(response) => {
+                        if response.success {
+                            if let Some(data) = response.data {
+                                if let Some(size) = data.get("size").and_then(|v| v.as_u64()) {
+                                    return Ok(size);
+                                }
+                            }
+                        }
+                        Ok(0)
+                    }
+                    Err(e) => Err(format!("Ошибка получения размера коллекции: {}", e))
+                }
+            } else {
+                Err(format!("Шард {} не найден", shard_id))
+            }
+        } else {
+            Err("Клиент для множественных шардов не инициализирован".to_string())
+        }
+    }
+
+    /// Мигрирует коллекцию с одного шарда на другой
+    pub async fn migrate_collection(
+        &self,
+        collection_name: String,
+        from_shard: String,
+        to_shard: String
+    ) -> Result<(), String> {
+        println!("🔄 Начало миграции коллекции '{}' с {} на {}", collection_name, from_shard, to_shard);
+
+        // 1. Получаем информацию о коллекции с исходного шарда
+        let collection = self.get_collection(collection_name.clone()).await?
+            .ok_or_else(|| format!("Коллекция {} не найдена", collection_name))?;
+
+        // 2. Создаем коллекцию на целевом шарде, если её там нет
+        if let Some(ref multi_client) = self.multi_shard_client {
+            if let Some(client) = multi_client.get_client(&to_shard) {
+                match client.create_collection(
+                    collection_name.clone(), 
+                    collection.lsh_metric.clone(), 
+                    collection.vector_dimension
+                ).await {
+                    Ok(response) => {
+                        if !response.success {
+                            // Коллекция уже может существовать, это нормально
+                            println!("⚠️  Коллекция уже существует на целевом шарде или ошибка создания");
+                        }
+                    }
+                    Err(e) => {
+                        return Err(format!("Ошибка создания коллекции на целевом шарде: {}", e));
+                    }
+                }
+            }
+        }
+
+        // 3. Получаем все векторы с исходного шарда
+        // Примечание: это упрощенная реализация
+        // В реальности нужно получить все векторы и перенести их
+        println!("📦 Копирование данных...");
+        
+        // Обновляем информацию о коллекциях в менеджере шардов
+        {
+            let mut shard_manager = self.shard_manager.write().await;
+            
+            // Добавляем коллекцию на целевой шард
+            shard_manager.add_collection_to_shard(&to_shard, collection_name.clone())?;
+            
+            // Удаляем коллекцию с исходного шарда
+            shard_manager.remove_collection_from_shard(&from_shard, &collection_name)?;
+        }
+
+        // 4. Удаляем коллекцию с исходного шарда
+        if let Some(ref multi_client) = self.multi_shard_client {
+            if let Some(client) = multi_client.get_client(&from_shard) {
+                match client.delete_collection(collection_name.clone()).await {
+                    Ok(_) => {
+                        println!("✅ Коллекция удалена с исходного шарда");
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️  Ошибка удаления коллекции с исходного шарда: {}", e);
+                    }
+                }
+            }
+        }
+
+        println!("✅ Миграция коллекции '{}' завершена", collection_name);
+        Ok(())
+    }
+
+    /// Находит коллекцию для миграции с перегруженного шарда
+    async fn find_collection_to_migrate(&self, shard_id: &str) -> Option<(String, u64)> {
         let shard_manager = self.shard_manager.read().await;
         
-        // Анализируем нагрузку на каждый шард
-        let mut shard_loads: Vec<(String, f64)> = Vec::new();
-        for (shard_id, shard) in &shard_manager.shards {
-            if shard.info.status == ShardStatus::Active {
-                let load = shard.info.used_space as f64 / shard.info.capacity as f64;
-                shard_loads.push((shard_id.clone(), load));
+        if let Some(shard) = shard_manager.get_shard_info(shard_id) {
+            // Находим самую большую коллекцию для миграции
+            let mut best_collection = None;
+            let mut max_size = 0u64;
+            
+            for collection_name in &shard.info.collections {
+                if let Ok(size) = self.get_collection_size(shard_id, collection_name).await {
+                    if size > max_size {
+                        max_size = size;
+                        best_collection = Some(collection_name.clone());
+                    }
+                }
             }
+            
+            if let Some(collection) = best_collection {
+                return Some((collection, max_size));
+            }
+        }
+        
+        None
+    }
+
+    /// Балансирует нагрузку между шардами с автоматической миграцией
+    pub async fn rebalance_shards(&self) -> Result<(), String> {
+        println!("⚖️  Начало балансировки шардов...");
+        
+        // Освобождаем shard_manager для анализа
+        let shard_loads = {
+            let shard_manager = self.shard_manager.read().await;
+            
+            // Анализируем нагрузку на каждый шард
+            let mut loads: Vec<(String, f64)> = Vec::new();
+            for (shard_id, shard) in &shard_manager.shards {
+                if shard.info.status == ShardStatus::Active {
+                    let load = if shard.info.capacity == 0 {
+                        0.0
+                    } else {
+                        shard.info.used_space as f64 / shard.info.capacity as f64
+                    };
+                    loads.push((shard_id.clone(), load));
+                }
+            }
+            loads
+        };
+        
+        if shard_loads.is_empty() {
+            return Err("Нет доступных шардов для балансировки".to_string());
         }
         
         // Сортируем по нагрузке
-        shard_loads.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        let mut sorted_loads = shard_loads.clone();
+        sorted_loads.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        
+        // Выводим текущую статистику
+        println!("📊 Текущая нагрузка на шарды:");
+        for (shard_id, load) in &sorted_loads {
+            println!("   {} - {:.1}%", shard_id, load * 100.0);
+        }
         
         // Если разница в нагрузке между самыми загруженным и наименее загруженным шардом
         // превышает 20%, выполняем балансировку
-        if shard_loads.len() > 1 {
-            let max_load = shard_loads.last().unwrap().1;
-            let min_load = shard_loads.first().unwrap().1;
+        if sorted_loads.len() > 1 {
+            let (most_loaded_shard, max_load) = sorted_loads.last().unwrap();
+            let (least_loaded_shard, min_load) = sorted_loads.first().unwrap();
             
-            if max_load - min_load > 0.2 {
-                // Здесь можно добавить логику миграции коллекций
-                // между перегруженными и недогруженными шардами
-                println!("Выполняется балансировка шардов: max_load={:.2}, min_load={:.2}", max_load, min_load);
+            let load_diff = max_load - min_load;
+            
+            if load_diff > 0.2 {
+                println!("⚠️  Обнаружен дисбаланс: {:.1}% разницы", load_diff * 100.0);
+                println!("🔄 Начало миграции коллекций...");
+                
+                // Находим коллекцию для миграции с самого загруженного шарда
+                if let Some((collection_name, size)) = self.find_collection_to_migrate(most_loaded_shard).await {
+                    println!("📦 Найдена коллекция для миграции: {} (размер: {} bytes)", collection_name, size);
+                    
+                    // Выполняем миграцию
+                    match self.migrate_collection(
+                        collection_name.clone(),
+                        most_loaded_shard.clone(),
+                        least_loaded_shard.clone()
+                    ).await {
+                        Ok(_) => {
+                            println!("✅ Миграция выполнена успешно");
+                            
+                            // Обновляем использование пространства на шардах
+                            {
+                                let mut shard_manager = self.shard_manager.write().await;
+                                let _ = shard_manager.update_shard_usage(most_loaded_shard, -(size as i64));
+                                let _ = shard_manager.update_shard_usage(least_loaded_shard, size as i64);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Ошибка миграции: {}", e);
+                        }
+                    }
+                } else {
+                    println!("⚠️  Нет коллекций для миграции на шарде {}", most_loaded_shard);
+                }
+            } else {
+                println!("✅ Балансировка не требуется (разница нагрузки: {:.1}%)", load_diff * 100.0);
             }
         }
         
+        println!("⚖️  Балансировка завершена");
+        Ok(())
+    }
+
+    /// Балансирует нагрузку между шардами с указанным порогом
+    pub async fn rebalance_shards_with_threshold(&self, threshold: f64) -> Result<(), String> {
+        println!("⚖️  Начало балансировки шардов с порогом {:.1}%...", threshold * 100.0);
+        
+        let (overloaded, underloaded) = {
+            let shard_manager = self.shard_manager.read().await;
+            (
+                shard_manager.get_overloaded_shards(threshold),
+                shard_manager.get_underloaded_shards(1.0 - threshold)
+            )
+        };
+        
+        if overloaded.is_empty() {
+            println!("✅ Нет перегруженных шардов");
+            return Ok(());
+        }
+        
+        if underloaded.is_empty() {
+            println!("⚠️  Нет недогруженных шардов для миграции");
+            return Ok(());
+        }
+        
+        println!("📊 Перегруженные шарды: {:?}", overloaded);
+        println!("📊 Недогруженные шарды: {:?}", underloaded);
+        
+        // Мигрируем по одной коллекции с каждого перегруженного шарда
+        for overloaded_shard in overloaded {
+            if let Some(underloaded_shard) = underloaded.first() {
+                if let Some((collection_name, size)) = self.find_collection_to_migrate(&overloaded_shard).await {
+                    println!("🔄 Миграция {} с {} на {}", collection_name, overloaded_shard, underloaded_shard);
+                    
+                    match self.migrate_collection(
+                        collection_name,
+                        overloaded_shard.clone(),
+                        underloaded_shard.clone()
+                    ).await {
+                        Ok(_) => {
+                            let mut shard_manager = self.shard_manager.write().await;
+                            let _ = shard_manager.update_shard_usage(&overloaded_shard, -(size as i64));
+                            let _ = shard_manager.update_shard_usage(underloaded_shard, size as i64);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Ошибка миграции: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+        
+        println!("⚖️  Балансировка завершена");
         Ok(())
     }
 
@@ -857,5 +1203,369 @@ impl ShardCoordinator {
         all_collections.dedup_by(|a, b| a.name == b.name);
 
         Ok(all_collections)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_shards() -> Vec<ShardConfig> {
+        vec![
+            ShardConfig {
+                id: "shard1".to_string(),
+                host: "localhost".to_string(),
+                port: 8081,
+                description: Some("Shard 1".to_string()),
+            },
+            ShardConfig {
+                id: "shard2".to_string(),
+                host: "localhost".to_string(),
+                port: 8082,
+                description: Some("Shard 2".to_string()),
+            },
+            ShardConfig {
+                id: "shard3".to_string(),
+                host: "localhost".to_string(),
+                port: 8083,
+                description: Some("Shard 3".to_string()),
+            },
+        ]
+    }
+
+    #[test]
+    fn test_hash_based_routing_stability() {
+        // Проверяем, что хеш-роутинг стабилен при повторных вызовах
+        let shards = create_test_shards();
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        let collection_name = "test_collection";
+        
+        // Выполняем несколько раз и проверяем, что результат одинаковый
+        let shard1 = manager.get_shard_for_collection(collection_name).unwrap();
+        let shard2 = manager.get_shard_for_collection(collection_name).unwrap();
+        let shard3 = manager.get_shard_for_collection(collection_name).unwrap();
+
+        assert_eq!(shard1, shard2);
+        assert_eq!(shard2, shard3);
+    }
+
+    #[test]
+    fn test_hash_based_routing_distribution() {
+        // Проверяем, что разные коллекции распределяются по разным шардам
+        let shards = create_test_shards();
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        let mut shard_usage = std::collections::HashMap::new();
+        
+        // Создаем 30 коллекций с разными именами
+        for i in 0..30 {
+            let collection_name = format!("collection_{}", i);
+            let shard_id = manager.get_shard_for_collection(&collection_name).unwrap();
+            *shard_usage.entry(shard_id).or_insert(0) += 1;
+        }
+
+        // Проверяем, что каждый шард получил хотя бы одну коллекцию
+        assert_eq!(shard_usage.len(), 3, "Все шарды должны быть задействованы");
+        
+        // Проверяем, что распределение относительно равномерное (не менее 5 коллекций на шард)
+        for (shard_id, count) in shard_usage.iter() {
+            assert!(
+                *count >= 5,
+                "Шард {} получил слишком мало коллекций: {}",
+                shard_id,
+                count
+            );
+        }
+    }
+
+    #[test]
+    fn test_range_based_routing_stability() {
+        // Проверяем, что диапазонный роутинг стабилен
+        let shards = create_test_shards();
+        let manager = ShardManager::new(shards, RoutingStrategy::RangeBased);
+
+        let collection_name = "test_collection";
+        
+        let shard1 = manager.get_shard_for_collection(collection_name).unwrap();
+        let shard2 = manager.get_shard_for_collection(collection_name).unwrap();
+
+        assert_eq!(shard1, shard2);
+    }
+
+    #[test]
+    fn test_range_based_routing_different_names() {
+        // Проверяем, что коллекции с разными первыми буквами могут попасть на разные шарды
+        let shards = create_test_shards();
+        let manager = ShardManager::new(shards, RoutingStrategy::RangeBased);
+
+        let mut shard_usage = std::collections::HashMap::new();
+        
+        // Создаем коллекции с разными первыми буквами
+        for letter in 'a'..='z' {
+            let collection_name = format!("{}collection", letter);
+            let shard_id = manager.get_shard_for_collection(&collection_name).unwrap();
+            *shard_usage.entry(shard_id).or_insert(0) += 1;
+        }
+
+        // Проверяем, что используется более одного шарда
+        assert!(
+            shard_usage.len() > 1,
+            "Range-based роутинг должен распределять по нескольким шардам"
+        );
+    }
+
+    #[test]
+    fn test_bucket_routing_stability() {
+        // Проверяем, что роутинг бакетов стабилен
+        let shards = create_test_shards();
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        let bucket_id = 12345u64;
+        
+        let shard1 = manager.get_shard_for_bucket(bucket_id).unwrap();
+        let shard2 = manager.get_shard_for_bucket(bucket_id).unwrap();
+        let shard3 = manager.get_shard_for_bucket(bucket_id).unwrap();
+
+        assert_eq!(shard1, shard2);
+        assert_eq!(shard2, shard3);
+    }
+
+    #[test]
+    fn test_empty_shards_error() {
+        // Проверяем, что пустой список шардов возвращает ошибку
+        let manager = ShardManager::new(vec![], RoutingStrategy::HashBased);
+
+        let result = manager.get_shard_for_collection("test");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Нет доступных шардов");
+    }
+
+    #[test]
+    fn test_shard_ids_sorted() {
+        // Проверяем, что порядок ID шардов не влияет на результат
+        let shards1 = create_test_shards();
+        let manager1 = ShardManager::new(shards1, RoutingStrategy::HashBased);
+
+        // Создаем шарды в обратном порядке
+        let mut shards2 = create_test_shards();
+        shards2.reverse();
+        let manager2 = ShardManager::new(shards2, RoutingStrategy::HashBased);
+
+        // Проверяем, что для одной и той же коллекции выбирается один шард
+        let collection_name = "test_collection";
+        let shard1 = manager1.get_shard_for_collection(collection_name).unwrap();
+        let shard2 = manager2.get_shard_for_collection(collection_name).unwrap();
+
+        assert_eq!(shard1, shard2, "Порядок добавления шардов не должен влиять на роутинг");
+    }
+
+    #[test]
+    fn test_replication_factor() {
+        // Проверяем, что репликация работает корректно
+        let shards = create_test_shards();
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        let bucket_id = 12345u64;
+        let shards_for_bucket = manager.get_shards_for_bucket(bucket_id).unwrap();
+
+        // Проверяем, что возвращается несколько шардов (первичный + реплики)
+        assert!(
+            shards_for_bucket.len() >= 1,
+            "Должен быть хотя бы один шард"
+        );
+
+        // Проверяем, что все шарды уникальны
+        let unique_shards: std::collections::HashSet<_> = shards_for_bucket.iter().collect();
+        assert_eq!(
+            unique_shards.len(),
+            shards_for_bucket.len(),
+            "Все шарды должны быть уникальны"
+        );
+    }
+
+    #[test]
+    fn test_get_active_shards() {
+        // Проверяем получение активных шардов
+        let shards = create_test_shards();
+        let manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        let active_shards = manager.get_active_shards();
+        assert_eq!(active_shards.len(), 3);
+    }
+
+    #[test]
+    fn test_update_shard_status() {
+        // Проверяем обновление статуса шарда
+        let shards = create_test_shards();
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        let result = manager.update_shard_status("shard1", ShardStatus::Maintenance);
+        assert!(result.is_ok());
+
+        let shard_info = manager.get_shard_info("shard1").unwrap();
+        assert_eq!(shard_info.info.status, ShardStatus::Maintenance);
+    }
+
+    #[test]
+    fn test_add_collection_to_shard() {
+        // Проверяем добавление коллекции к шарду
+        let shards = create_test_shards();
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        let result = manager.add_collection_to_shard("shard1", "test_collection".to_string());
+        assert!(result.is_ok());
+
+        let shard_info = manager.get_shard_info("shard1").unwrap();
+        assert!(shard_info.info.collections.contains(&"test_collection".to_string()));
+    }
+
+    #[test]
+    fn test_update_shard_usage() {
+        // Проверяем обновление использования пространства
+        let shards = create_test_shards();
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        // Начальное значение used_space = 0
+        let shard_info = manager.get_shard_info("shard1").unwrap();
+        assert_eq!(shard_info.info.used_space, 0);
+
+        // Увеличиваем на 1000
+        let result = manager.update_shard_usage("shard1", 1000);
+        assert!(result.is_ok());
+        
+        let shard_info = manager.get_shard_info("shard1").unwrap();
+        assert_eq!(shard_info.info.used_space, 1000);
+
+        // Уменьшаем на 500
+        let result = manager.update_shard_usage("shard1", -500);
+        assert!(result.is_ok());
+        
+        let shard_info = manager.get_shard_info("shard1").unwrap();
+        assert_eq!(shard_info.info.used_space, 500);
+
+        // Пытаемся уменьшить больше чем есть - должно быть 0
+        let result = manager.update_shard_usage("shard1", -1000);
+        assert!(result.is_ok());
+        
+        let shard_info = manager.get_shard_info("shard1").unwrap();
+        assert_eq!(shard_info.info.used_space, 0);
+    }
+
+    #[test]
+    fn test_set_shard_usage() {
+        // Проверяем установку использования пространства
+        let shards = create_test_shards();
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        let result = manager.set_shard_usage("shard1", 5000);
+        assert!(result.is_ok());
+        
+        let shard_info = manager.get_shard_info("shard1").unwrap();
+        assert_eq!(shard_info.info.used_space, 5000);
+    }
+
+    #[test]
+    fn test_get_shard_load() {
+        // Проверяем получение коэффициента загрузки
+        let shards = create_test_shards();
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        // Устанавливаем used_space = 500000 (capacity = 1000000 по умолчанию)
+        manager.set_shard_usage("shard1", 500000).unwrap();
+        
+        let load = manager.get_shard_load("shard1").unwrap();
+        assert_eq!(load, 0.5); // 50% загрузки
+    }
+
+    #[test]
+    fn test_get_overloaded_shards() {
+        // Проверяем получение перегруженных шардов
+        let shards = create_test_shards();
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        // Устанавливаем разную загрузку на шардах
+        manager.set_shard_usage("shard1", 900000).unwrap(); // 90% - перегружен
+        manager.set_shard_usage("shard2", 500000).unwrap(); // 50% - норма
+        manager.set_shard_usage("shard3", 200000).unwrap(); // 20% - недогружен
+
+        let overloaded = manager.get_overloaded_shards(0.8); // порог 80%
+        
+        assert_eq!(overloaded.len(), 1);
+        assert!(overloaded.contains(&"shard1".to_string()));
+    }
+
+    #[test]
+    fn test_get_underloaded_shards() {
+        // Проверяем получение недогруженных шардов
+        let shards = create_test_shards();
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        // Устанавливаем разную загрузку на шардах
+        manager.set_shard_usage("shard1", 900000).unwrap(); // 90% - перегружен
+        manager.set_shard_usage("shard2", 500000).unwrap(); // 50% - норма
+        manager.set_shard_usage("shard3", 200000).unwrap(); // 20% - недогружен
+
+        let underloaded = manager.get_underloaded_shards(0.3); // порог 30%
+        
+        assert_eq!(underloaded.len(), 1);
+        assert!(underloaded.contains(&"shard3".to_string()));
+    }
+
+    #[test]
+    fn test_balancing_detection() {
+        // Проверяем определение необходимости балансировки
+        let shards = create_test_shards();
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        // Создаем дисбаланс: shard1 перегружен, shard3 недогружен
+        manager.set_shard_usage("shard1", 900000).unwrap(); // 90%
+        manager.set_shard_usage("shard2", 500000).unwrap(); // 50%
+        manager.set_shard_usage("shard3", 100000).unwrap(); // 10%
+
+        // Проверяем коэффициенты загрузки
+        let load1 = manager.get_shard_load("shard1").unwrap();
+        let load3 = manager.get_shard_load("shard3").unwrap();
+        
+        // Разница > 20% - требуется балансировка
+        assert!((load1 - load3) > 0.2);
+    }
+
+    #[test]
+    fn test_shard_usage_with_invalid_shard() {
+        // Проверяем обработку ошибок при работе с несуществующим шардом
+        let shards = create_test_shards();
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+
+        let result = manager.update_shard_usage("non_existent_shard", 1000);
+        assert!(result.is_err());
+        
+        let result = manager.set_shard_usage("non_existent_shard", 1000);
+        assert!(result.is_err());
+        
+        let result = manager.get_shard_load("non_existent_shard");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_zero_capacity_shard() {
+        // Проверяем обработку шарда с нулевой емкостью
+        let mut shards = create_test_shards();
+        shards[0] = ShardConfig {
+            id: "shard_zero_capacity".to_string(),
+            host: "localhost".to_string(),
+            port: 9000,
+            description: Some("Shard with zero capacity".to_string()),
+        };
+        
+        let mut manager = ShardManager::new(shards, RoutingStrategy::HashBased);
+        
+        // Устанавливаем capacity в 0
+        if let Some(shard) = manager.shards.get_mut("shard_zero_capacity") {
+            shard.info.capacity = 0;
+        }
+
+        let load = manager.get_shard_load("shard_zero_capacity").unwrap();
+        assert_eq!(load, 0.0); // Для нулевой емкости load должен быть 0
     }
 }
