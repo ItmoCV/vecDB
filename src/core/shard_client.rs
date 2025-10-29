@@ -571,4 +571,47 @@ impl MultiShardClient {
             failed_operations: failed,
         }
     }
+
+    /// Выполняет dump на всех шардах
+    pub async fn dump_all_shards(&self) -> MultiShardResult {
+        let mut results = Vec::new();
+        let mut successful = 0;
+        let mut failed = 0;
+
+        for (shard_id, client) in &self.clients {
+            let request = ShardRequest {
+                operation: "dump".to_string(),
+                collection: None,
+                vector_id: None,
+                embedding: None,
+                metadata: None,
+                query: None,
+                k: None,
+                filters: None,
+            };
+
+            match client.send_request(request).await {
+                Ok(mut response) => {
+                    response.shard_id = shard_id.clone();
+                    results.push(response);
+                    successful += 1;
+                }
+                Err(error) => {
+                    results.push(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some(error),
+                        shard_id: shard_id.clone(),
+                    });
+                    failed += 1;
+                }
+            }
+        }
+
+        MultiShardResult {
+            results,
+            successful_operations: successful,
+            failed_operations: failed,
+        }
+    }
 }

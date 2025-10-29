@@ -116,14 +116,8 @@ async fn main() {
     
     // Запускаем HTTP сервер через ConnectionController (блокирует выполнение до остановки)
     match connection_controller.start_server(db, addr).await {
-        Ok(returned_db) => {
+        Ok(_returned_db) => {
             println!("\n🛑 Получен сигнал остановки сервера");
-            println!("💾 Сохранение всех коллекций на диск...");
-            
-            // Выполняем dump через возвращенный VectorDB
-            returned_db.dump().await;
-            
-            println!("✅ Все коллекции успешно сохранены!");
             println!("👋 Завершение работы...");
         }
         Err(e) => {
