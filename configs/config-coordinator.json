@@ -10,8 +10,7 @@
     },
     "sharding": {
         "enabled": true,
-        "strategy": "hash_based",
-        "mode": "bucket_based",
+        "strategy": "lsh_based",
         "shards": [
             {
                 "id": "shard1",

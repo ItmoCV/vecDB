@@ -372,8 +372,18 @@ pub async fn find_similar(State(state): State<AppState>, Json(payload): Json<Fin
 pub async fn stop(State(state): State<AppState>) -> Json<RpcResponse> {
     let mut stop_results = Vec::new();
     
-    // Если есть клиент для шардов, останавливаем все шарды
+    // Если есть клиент для шардов, сначала сохраняем данные, затем останавливаем шарды
     if let Some(shard_client) = &state.shard_client {
+        println!("💾 Сохранение данных на всех шардах...");
+        
+        // Сохраняем данные на всех шардах
+        let dump_result = shard_client.dump_all_shards().await;
+        if dump_result.successful_operations > 0 {
+            println!("✅ Данные сохранены на {} шардах", dump_result.successful_operations);
+        } else {
+            eprintln!("⚠️  Не удалось сохранить данные ни на одном шарде");
+        }
+        
         println!("🛑 Останавливаем все шарды...");
         let result = shard_client.stop_all_shards().await;
         

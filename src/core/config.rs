@@ -1,7 +1,7 @@
 use std::{collections::HashMap};
 use std::fs;
 use serde_json::Value;
-use crate::core::sharding::{ShardConfig, RoutingStrategy, ShardingMode};
+use crate::core::sharding::{ShardConfig, RoutingStrategy};
 
 // structs define
 
@@ -158,24 +158,10 @@ impl ConfigLoader {
             "hash_based" => RoutingStrategy::HashBased,
             "range_based" => RoutingStrategy::RangeBased,
             "lsh_based" => RoutingStrategy::LSHBased,
-            "metadata_based" => RoutingStrategy::MetadataBased,
             _ => RoutingStrategy::HashBased,
         }
     }
 
-    /// Получает режим шардирования из конфигурации
-    pub fn get_sharding_mode(&self) -> ShardingMode {
-        let sharding_config = self.get("sharding");
-        let default_mode = "collection_based".to_string();
-        let mode = sharding_config.get("mode")
-            .unwrap_or(&default_mode);
-        
-        match mode.as_str() {
-            "bucket_based" => ShardingMode::BucketBased,
-            "collection_based" => ShardingMode::CollectionBased,
-            _ => ShardingMode::CollectionBased,
-        }
-    }
 
     /// Проверяет, включено ли шардирование
     pub fn is_sharding_enabled(&self) -> bool {
