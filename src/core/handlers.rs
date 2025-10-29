@@ -412,6 +412,113 @@ pub async fn stop(State(state): State<AppState>) -> Json<RpcResponse> {
     })
 }
 
+/// Получение статистики по шардам
+#[utoipa::path(
+    get,
+    path = "/shards/statistics",
+    responses(
+        (status = 200, description = "Статистика по шардам", body = RpcResponse),
+        (status = 400, description = "Ошибка", body = RpcResponse)
+    ),
+    tag = "Sharding"
+)]
+pub async fn get_shards_statistics(State(state): State<AppState>) -> Json<RpcResponse> {
+    let db = state.vector_db.read().await;
+    
+    if !db.is_sharded() {
+        return Json(RpcResponse {
+            status: "error".to_string(),
+            data: None,
+            message: Some("База данных не является шардированной".to_string())
+        });
+    }
+    
+    match db.get_shard_statistics().await {
+        Ok(stats) => Json(RpcResponse {
+            status: "ok".to_string(),
+            data: Some(serde_json::json!(stats)),
+            message: None
+        }),
+        Err(e) => Json(RpcResponse {
+            status: "error".to_string(),
+            data: None,
+            message: Some(e)
+        })
+    }
+}
+
+/// Запуск балансировки шардов
+#[utoipa::path(
+    post,
+    path = "/shards/rebalance",
+    responses(
+        (status = 200, description = "Балансировка запущена", body = RpcResponse),
+        (status = 400, description = "Ошибка", body = RpcResponse)
+    ),
+    tag = "Sharding"
+)]
+pub async fn trigger_rebalance(State(state): State<AppState>) -> Json<RpcResponse> {
+    let db = state.vector_db.read().await;
+    
+    if !db.is_sharded() {
+        return Json(RpcResponse {
+            status: "error".to_string(),
+            data: None,
+            message: Some("База данных не является шардированной".to_string())
+        });
+    }
+    
+    println!("🔄 Запрос на балансировку шардов...");
+    
+    match db.rebalance_shards().await {
+        Ok(_) => Json(RpcResponse {
+            status: "ok".to_string(),
+            data: Some(serde_json::json!({"message": "Балансировка завершена"})),
+            message: None
+        }),
+        Err(e) => Json(RpcResponse {
+            status: "error".to_string(),
+            data: None,
+            message: Some(e)
+        })
+    }
+}
+
+/// Проверка здоровья всех шардов
+#[utoipa::path(
+    get,
+    path = "/shards/health",
+    responses(
+        (status = 200, description = "Статус здоровья шардов", body = RpcResponse),
+        (status = 400, description = "Ошибка", body = RpcResponse)
+    ),
+    tag = "Sharding"
+)]
+pub async fn check_shards_health(State(state): State<AppState>) -> Json<RpcResponse> {
+    let db = state.vector_db.read().await;
+    
+    if !db.is_sharded() {
+        return Json(RpcResponse {
+            status: "error".to_string(),
+            data: None,
+            message: Some("База данных не является шардированной".to_string())
+        });
+    }
+    
+    match db.health_check_shards().await {
+        Ok(health_status) => Json(RpcResponse {
+            status: "ok".to_string(),
+            data: Some(serde_json::json!(health_status)),
+            message: None
+        }),
+        Err(e) => Json(RpcResponse {
+            status: "error".to_string(),
+            data: None,
+            message: Some(e)
+        })
+    }
+}
+
 /// Обработчик запросов от других шардов
 #[utoipa::path(
     post,
