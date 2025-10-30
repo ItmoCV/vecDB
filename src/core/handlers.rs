@@ -516,11 +516,26 @@ pub async fn check_shards_health(State(state): State<AppState>) -> Json<RpcRespo
     }
     
     match db.health_check_shards().await {
-        Ok(health_status) => Json(RpcResponse {
-            status: "ok".to_string(),
-            data: Some(serde_json::json!(health_status)),
-            message: None
-        }),
+        Ok(health_status) => {
+            // Тригерим реконсолидацию для здоровых шардов (на случай их "воскрешения")
+            for (shard_id, is_healthy) in &health_status {
+                if *is_healthy {
+                    // Запускаем без ожидания, чтобы не блокировать ответ
+                    let vector_db = state.vector_db.clone();
+                    let shard_id_clone = shard_id.clone();
+                    tokio::spawn(async move {
+                        let db = vector_db.read().await;
+                        let _ = db.reconcile_shard_data(shard_id_clone).await;
+                    });
+                }
+            }
+
+            Json(RpcResponse {
+                status: "ok".to_string(),
+                data: Some(serde_json::json!(health_status)),
+                message: None
+            })
+        },
         Err(e) => Json(RpcResponse {
             status: "error".to_string(),
             data: None,
@@ -858,6 +873,91 @@ pub async fn handle_shard_request(State(state): State<AppState>, Json(request): 
                     success: false,
                     data: None,
                     error: Some(format!("Ошибка получения статистики: {}", e)),
+                    shard_id: "local".to_string(),
+                })
+            }
+        }
+        "get_collection_size" => {
+            if let Some(collection_name) = request.collection {
+                match db.get_collection(collection_name.as_str()).await {
+                    Ok(Some(collection)) => {
+                        let size = collection.buckets_controller.total_vectors();
+                        Json(ShardResponse {
+                            success: true,
+                            data: Some(serde_json::json!({"size": size})),
+                            error: None,
+                            shard_id: "local".to_string(),
+                        })
+                    }
+                    Ok(None) => Json(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some("Коллекция не найдена".to_string()),
+                        shard_id: "local".to_string(),
+                    }),
+                    Err(e) => Json(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some(e.to_string()),
+                        shard_id: "local".to_string(),
+                    })
+                }
+            } else {
+                Json(ShardResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Не указано имя коллекции".to_string()),
+                    shard_id: "local".to_string(),
+                })
+            }
+        }
+        "get_all_vectors" => {
+            if let Some(collection_name) = request.collection {
+                match db.get_collection(collection_name.as_str()).await {
+                    Ok(Some(collection)) => {
+                        let mut vectors = Vec::new();
+                        if let Some(ref buckets) = collection.buckets_controller.buckets {
+                            for bucket in buckets.iter() {
+                                if let Some(ref vecs) = bucket.vectors_controller.vectors {
+                                    for (idx, vec_obj) in vecs.iter().enumerate() {
+                                        vectors.push(serde_json::json!({
+                                            "id": vec_obj.hash_id(),
+                                            "bucket_id": bucket.id,
+                                            "index": idx,
+                                            "data": {
+                                                "embedding": vec_obj.data,
+                                                "metadata": vec_obj.metadata,
+                                            }
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                        Json(ShardResponse {
+                            success: true,
+                            data: Some(serde_json::json!({"vectors": vectors})),
+                            error: None,
+                            shard_id: "local".to_string(),
+                        })
+                    }
+                    Ok(None) => Json(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some("Коллекция не найдена".to_string()),
+                        shard_id: "local".to_string(),
+                    }),
+                    Err(e) => Json(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some(e.to_string()),
+                        shard_id: "local".to_string(),
+                    })
+                }
+            } else {
+                Json(ShardResponse {
+                    success: false,
+                    data: None,
+                    error: Some("Не указано имя коллекции".to_string()),
                     shard_id: "local".to_string(),
                 })
             }
