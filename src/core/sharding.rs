@@ -380,6 +380,53 @@ impl ShardCoordinator {
         }
     }
 
+    /// Разрешает целевой шард для записи: если предпочтительный недоступен, выбирает ближайший доступный по кольцу
+    async fn resolve_writable_shard(&self, preferred_shard: &str) -> Result<String, String> {
+        // Получаем упорядоченный список шардов (для стабильного обхода по кольцу)
+        let (shard_ids_sorted, preferred_index) = {
+            let shard_manager = self.shard_manager.read().await;
+            let mut ids: Vec<String> = shard_manager.shards.keys().cloned().collect();
+            if ids.is_empty() {
+                return Err("Нет доступных шардов".to_string());
+            }
+            ids.sort();
+            let idx = ids
+                .iter()
+                .position(|id| id == preferred_shard)
+                .unwrap_or(0);
+            (ids, idx)
+        };
+
+        // Если есть HTTP клиенты, проверяем реальную доступность через health-check
+        if let Some(ref multi_client) = self.multi_shard_client {
+            let n = shard_ids_sorted.len();
+            for offset in 0..n {
+                let i = (preferred_index + offset) % n;
+                let candidate = &shard_ids_sorted[i];
+                if let Some(client) = multi_client.get_client(candidate) {
+                    match client.health_check().await {
+                        Ok(true) => return Ok(candidate.clone()),
+                        _ => continue,
+                    }
+                }
+            }
+            return Err("Нет доступных (здоровых) шардов".to_string());
+        }
+
+        // Фолбэк: если клиентов нет, ориентируемся на статус в менеджере шардов
+        let shard_manager = self.shard_manager.read().await;
+        for offset in 0..shard_ids_sorted.len() {
+            let i = (preferred_index + offset) % shard_ids_sorted.len();
+            let candidate = &shard_ids_sorted[i];
+            if let Some(shard) = shard_manager.get_shard_info(candidate) {
+                if shard.info.status == ShardStatus::Active {
+                    return Ok(candidate.clone());
+                }
+            }
+        }
+        Err("Нет активных шардов для записи".to_string())
+    }
+
     /// Создает коллекцию с учетом режима шардирования
     pub async fn create_collection(
         &self,
@@ -402,22 +449,25 @@ impl ShardCoordinator {
                     target_shard
                 };
 
+                // Проверяем доступность и при необходимости выбираем ближайший доступный
+                let writable_shard_id = self.resolve_writable_shard(&shard_id).await?;
+
                 if let Some(ref multi_client) = self.multi_shard_client {
-                    if let Some(client) = multi_client.get_client(&shard_id) {
+                    if let Some(client) = multi_client.get_client(&writable_shard_id) {
                         match client.create_collection(name.clone(), lsh_metric, vector_dimension).await {
                             Ok(response) => {
                                 if !response.success {
                                     return Err(format!("Ошибка создания коллекции на шарде {}: {:?}", 
-                                                     shard_id, response.error));
+                                                     writable_shard_id, response.error));
                                 }
-                                println!("✅ Коллекция '{}' создана на шарде {} (collection-based)", name, shard_id);
+                                println!("✅ Коллекция '{}' создана на шарде {} (collection-based)", name, writable_shard_id);
                             }
                             Err(e) => {
-                                return Err(format!("Ошибка связи с шардом {}: {}", shard_id, e));
+                                return Err(format!("Ошибка связи с шардом {}: {}", writable_shard_id, e));
                             }
                         }
                     } else {
-                        return Err(format!("Клиент для шарда {} не найден", shard_id));
+                        return Err(format!("Клиент для шарда {} не найден", writable_shard_id));
                     }
                 } else {
                     return Err("Клиент для множественных шардов не инициализирован".to_string());
@@ -426,7 +476,7 @@ impl ShardCoordinator {
                 // Регистрируем коллекцию в метаданных
                 {
                     let mut shard_manager = self.shard_manager.write().await;
-                    shard_manager.add_collection_to_shard(&shard_id, name)?;
+                    shard_manager.add_collection_to_shard(&writable_shard_id, name)?;
                 }
 
                 Ok(())
@@ -497,22 +547,25 @@ impl ShardCoordinator {
                     shard_manager.get_shard_for_collection(&name)?
                 };
 
-                println!("🗑️  Collection-based: удаление коллекции '{}' с шарда {}", name, shard_id);
+                // Проверяем доступность и при необходимости выбираем ближайший доступный
+                let writable_shard_id = self.resolve_writable_shard(&shard_id).await?;
+
+                println!("🗑️  Collection-based: удаление коллекции '{}' с шарда {} (целевой='{}')", name, writable_shard_id, shard_id);
 
                 if let Some(ref multi_client) = self.multi_shard_client {
-                    if let Some(client) = multi_client.get_client(&shard_id) {
+                    if let Some(client) = multi_client.get_client(&writable_shard_id) {
                         match client.delete_collection(name.clone()).await {
                             Ok(response) => {
                                 if !response.success {
                                     if let Some(error) = response.error {
-                                        eprintln!("⚠️  Ошибка удаления коллекции на шарде {}: {}", shard_id, error);
+                                        eprintln!("⚠️  Ошибка удаления коллекции на шарде {}: {}", writable_shard_id, error);
                                     }
                                 } else {
-                                    println!("✅ Коллекция '{}' удалена с шарда {}", name, shard_id);
+                                    println!("✅ Коллекция '{}' удалена с шарда {}", name, writable_shard_id);
                                 }
                             }
                             Err(e) => {
-                                eprintln!("⚠️  Ошибка связи с шардом {}: {}", shard_id, e);
+                                eprintln!("⚠️  Ошибка связи с шардом {}: {}", writable_shard_id, e);
                             }
                         }
                     }
@@ -521,7 +574,7 @@ impl ShardCoordinator {
                 // Удаляем коллекцию из метаданных
                 {
                     let mut shard_manager = self.shard_manager.write().await;
-                    shard_manager.remove_collection_from_shard(&shard_id, &name)?;
+                    shard_manager.remove_collection_from_shard(&writable_shard_id, &name)?;
                 }
 
                 Ok(())
@@ -589,35 +642,38 @@ impl ShardCoordinator {
                     shard_manager.get_shard_for_collection(&collection_name)?
                 };
 
-                println!("🎯 Collection-based: вектор в коллекции '{}' -> шард '{}'", 
-                         collection_name, shard_id);
+                // Проверяем доступность и при необходимости выбираем ближайший доступный
+                let writable_shard_id = self.resolve_writable_shard(&shard_id).await?;
+
+                println!("🎯 Collection-based: вектор в коллекции '{}' -> шард '{}' (целевой='{}')",
+                         collection_name, writable_shard_id, shard_id);
 
                 if let Some(ref multi_client) = self.multi_shard_client {
-                    match multi_client.add_vector_on_shard(&shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
+                    match multi_client.add_vector_on_shard(&writable_shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
                         Ok(response) => {
                             if response.success {
                                 let vector_id = response.data
                                     .and_then(|data| data.get("id").and_then(|v| v.as_u64()))
                                     .unwrap_or(0);
-                                println!("📡 Вектор добавлен на шард {} (collection-based): ID={}", shard_id, vector_id);
+                                println!("📡 Вектор добавлен на шард {} (collection-based): ID={}", writable_shard_id, vector_id);
                                 
                                 // Обновляем использование пространства на шарде
                                 {
                                     let mut shard_manager = self.shard_manager.write().await;
-                                    let _ = shard_manager.update_shard_usage(&shard_id, vector_size);
+                                    let _ = shard_manager.update_shard_usage(&writable_shard_id, vector_size);
                                 }
                                 
                                 Ok(vector_id)
                             } else {
                                 if let Some(error) = response.error {
-                                    Err(format!("Ошибка добавления вектора на шард {}: {}", shard_id, error))
+                                    Err(format!("Ошибка добавления вектора на шард {}: {}", writable_shard_id, error))
                                 } else {
                                     Err("Неизвестная ошибка добавления вектора".to_string())
                                 }
                             }
                         }
                         Err(e) => {
-                            Err(format!("Ошибка связи с шардом {}: {}", shard_id, e))
+                            Err(format!("Ошибка связи с шардом {}: {}", writable_shard_id, e))
                         }
                     }
                 } else {
@@ -640,35 +696,38 @@ impl ShardCoordinator {
                     shard_manager.get_shard_for_vector(&embedding, &temp_lsh)?
                 };
 
-                println!("🎯 Bucket-based: collection='{}', embedding_len={}, target_shard='{}'", 
-                         collection_name, embedding.len(), shard_id);
+                // Проверяем доступность и при необходимости выбираем ближайший доступный
+                let writable_shard_id = self.resolve_writable_shard(&shard_id).await?;
+
+                println!("🎯 Bucket-based: collection='{}', embedding_len={}, шард='{}' (целевой='{}')", 
+                         collection_name, embedding.len(), writable_shard_id, shard_id);
 
                 if let Some(ref multi_client) = self.multi_shard_client {
-                    match multi_client.add_vector_on_shard(&shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
+                    match multi_client.add_vector_on_shard(&writable_shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
                         Ok(response) => {
                             if response.success {
                                 let vector_id = response.data
                                     .and_then(|data| data.get("id").and_then(|v| v.as_u64()))
                                     .unwrap_or(0);
-                                println!("📡 Вектор добавлен на шард {} (bucket-based): ID={}", shard_id, vector_id);
+                                println!("📡 Вектор добавлен на шард {} (bucket-based): ID={}", writable_shard_id, vector_id);
                                 
                                 // Обновляем использование пространства на шарде
                                 {
                                     let mut shard_manager = self.shard_manager.write().await;
-                                    let _ = shard_manager.update_shard_usage(&shard_id, vector_size);
+                                    let _ = shard_manager.update_shard_usage(&writable_shard_id, vector_size);
                                 }
                                 
                                 Ok(vector_id)
                             } else {
                                 if let Some(error) = response.error {
-                                    Err(format!("Ошибка добавления вектора на шард {}: {}", shard_id, error))
+                                    Err(format!("Ошибка добавления вектора на шард {}: {}", writable_shard_id, error))
                                 } else {
                                     Err("Неизвестная ошибка добавления вектора".to_string())
                                 }
                             }
                         }
                         Err(e) => {
-                            Err(format!("Ошибка связи с шардом {}: {}", shard_id, e))
+                            Err(format!("Ошибка связи с шардом {}: {}", writable_shard_id, e))
                         }
                     }
                 } else {
@@ -693,6 +752,11 @@ impl ShardCoordinator {
         if let Some(ref multi_client) = self.multi_shard_client {
             let mut found = false;
             for (shard_id, client) in multi_client.iter_clients() {
+                // Пропускаем шард, если он не здоров
+                match client.health_check().await {
+                    Ok(true) => {}
+                    _ => { continue; }
+                }
                 match client.update_vector(collection_name.clone(), vector_id, new_embedding.clone(), new_metadata.clone()).await {
                     Ok(response) => {
                         if response.success {
@@ -742,6 +806,11 @@ impl ShardCoordinator {
             let mut found = false;
             
             for (shard_id, client) in multi_client.iter_clients() {
+                // Пропускаем шард, если он не здоров
+                match client.health_check().await {
+                    Ok(true) => {}
+                    _ => { continue; }
+                }
                 match client.delete_vector(collection_name.clone(), vector_id).await {
                     Ok(response) => {
                         if response.success {
@@ -782,6 +851,11 @@ impl ShardCoordinator {
         // Ищем вектор на всех шардах
         if let Some(ref multi_client) = self.multi_shard_client {
             for (shard_id, client) in multi_client.iter_clients() {
+                // Пропускаем шард, если он не здоров
+                match client.health_check().await {
+                    Ok(true) => {}
+                    _ => { continue; }
+                }
                 match client.get_vector(collection_name.clone(), vector_id).await {
                     Ok(response) => {
                         if response.success {
@@ -843,6 +917,10 @@ impl ShardCoordinator {
                     };
 
                     if let Some(client) = multi_client.get_client(&shard_id) {
+                        // Если шард не здоров — просто возвращаем текущий результат (пустой/частичный)
+                        if !matches!(client.health_check().await, Ok(true)) {
+                            return Ok(all_results);
+                        }
                         match client.filter_by_metadata(collection_name.clone(), filters.clone()).await {
                             Ok(response) => {
                                 if response.success {
@@ -875,6 +953,11 @@ impl ShardCoordinator {
 
                     for shard_id in shard_ids {
                         if let Some(client) = multi_client.get_client(&shard_id) {
+                            // Пропускаем шард, если он не здоров
+                            match client.health_check().await {
+                                Ok(true) => {}
+                                _ => { continue; }
+                            }
                             match client.filter_by_metadata(collection_name.clone(), filters.clone()).await {
                                 Ok(response) => {
                                     if response.success {
@@ -920,6 +1003,7 @@ impl ShardCoordinator {
 
         // Ищем на удаленных шардах
         if let Some(ref multi_client) = self.multi_shard_client {
+            // Внутри клиента идёт обращение ко всем шардам; здесь дополнительных проверок не требуется
             match multi_client.find_similar_across_shards(collection_name, query, k).await {
                 Ok(remote_results) => {
                     all_results.extend(remote_results);
@@ -952,6 +1036,20 @@ impl ShardCoordinator {
             let mut _failed = 0;
 
             for (shard_id, client) in multi_client.iter_clients() {
+                // Пропускаем шард, если он не здоров
+                match client.health_check().await {
+                    Ok(true) => {}
+                    _ => {
+                        results.push(crate::core::shard_client::ShardResponse {
+                            success: false,
+                            data: None,
+                            error: Some("Шард недоступен".to_string()),
+                            shard_id: shard_id.clone(),
+                        });
+                        _failed += 1;
+                        continue;
+                    }
+                }
                 let request = crate::core::shard_client::ShardRequest {
                     operation: "dump".to_string(),
                     collection: None,
@@ -1005,6 +1103,20 @@ impl ShardCoordinator {
             let mut _failed = 0;
 
             for (shard_id, client) in multi_client.iter_clients() {
+                // Пропускаем шард, если он не здоров
+                match client.health_check().await {
+                    Ok(true) => {}
+                    _ => {
+                        results.push(crate::core::shard_client::ShardResponse {
+                            success: false,
+                            data: None,
+                            error: Some("Шард недоступен".to_string()),
+                            shard_id: shard_id.clone(),
+                        });
+                        _failed += 1;
+                        continue;
+                    }
+                }
                 let request = crate::core::shard_client::ShardRequest {
                     operation: "load".to_string(),
                     collection: None,
@@ -1052,7 +1164,9 @@ impl ShardCoordinator {
     /// Получает размер коллекции на конкретном шарде
     async fn get_collection_size(&self, shard_id: &str, collection_name: &str) -> Result<u64, String> {
         if let Some(ref multi_client) = self.multi_shard_client {
-            if let Some(client) = multi_client.get_client(shard_id) {
+            // Разрешаем ближайший доступный шард для чтения/запроса
+            let readable_shard = self.resolve_writable_shard(shard_id).await.unwrap_or(shard_id.to_string());
+            if let Some(client) = multi_client.get_client(&readable_shard) {
                 let request = crate::core::shard_client::ShardRequest {
                     operation: "get_collection_size".to_string(),
                     collection: Some(collection_name.to_string()),
@@ -1077,7 +1191,7 @@ impl ShardCoordinator {
                     Err(e) => Err(format!("Ошибка получения размера коллекции: {}", e))
                 }
             } else {
-                Err(format!("Шард {} не найден", shard_id))
+                Err(format!("Шард {} не найден", readable_shard))
             }
         } else {
             Err("Клиент для множественных шардов не инициализирован".to_string())
@@ -1097,9 +1211,10 @@ impl ShardCoordinator {
         let collection = self.get_collection(collection_name.clone()).await?
             .ok_or_else(|| format!("Коллекция {} не найдена", collection_name))?;
 
-        // 2. Создаем коллекцию на целевом шарде, если её там нет
+        // 2. Создаем коллекцию на целевом шарде, если её там нет (с учетом доступности)
+        let writable_to_shard = self.resolve_writable_shard(&to_shard).await?;
         if let Some(ref multi_client) = self.multi_shard_client {
-            if let Some(client) = multi_client.get_client(&to_shard) {
+            if let Some(client) = multi_client.get_client(&writable_to_shard) {
                 match client.create_collection(
                     collection_name.clone(), 
                     collection.lsh_metric.clone(), 
@@ -1135,7 +1250,7 @@ impl ShardCoordinator {
             let mut failed_count = 0;
             
             for (vector_id, vector_data) in vectors_to_migrate {
-                if let Some(client) = multi_client.get_client(&to_shard) {
+                if let Some(client) = multi_client.get_client(&writable_to_shard) {
                     // Парсим данные вектора
                     if let (Some(embedding), Some(metadata)) = (
                         vector_data.get("embedding").and_then(|v| v.as_array()),
@@ -1176,7 +1291,7 @@ impl ShardCoordinator {
                         eprintln!("⚠️  Неверный формат данных вектора {}", vector_id);
                     }
                 } else {
-                    return Err(format!("Клиент для целевого шарда {} не найден", to_shard));
+                    return Err(format!("Клиент для целевого шарда {} не найден", writable_to_shard));
                 }
             }
             
@@ -1216,15 +1331,16 @@ impl ShardCoordinator {
             let mut shard_manager = self.shard_manager.write().await;
             
             // Добавляем коллекцию на целевой шард
-            shard_manager.add_collection_to_shard(&to_shard, collection_name.clone())?;
+            shard_manager.add_collection_to_shard(&writable_to_shard, collection_name.clone())?;
             
             // Удаляем коллекцию с исходного шарда
             shard_manager.remove_collection_from_shard(&from_shard, &collection_name)?;
         }
 
-        // 6. Удаляем коллекцию с исходного шарда
+        // 6. Удаляем коллекцию с исходного шарда (с учетом доступности исходного)
+        let writable_from_shard = self.resolve_writable_shard(&from_shard).await.unwrap_or(from_shard);
         if let Some(ref multi_client) = self.multi_shard_client {
-            if let Some(client) = multi_client.get_client(&from_shard) {
+            if let Some(client) = multi_client.get_client(&writable_from_shard) {
                 match client.delete_collection(collection_name.clone()).await {
                     Ok(_) => {
                         println!("✅ Коллекция удалена с исходного шарда");
@@ -1247,7 +1363,9 @@ impl ShardCoordinator {
         shard_id: String,
     ) -> Result<Vec<(u64, serde_json::Value)>, String> {
         if let Some(ref multi_client) = self.multi_shard_client {
-            if let Some(client) = multi_client.get_client(&shard_id) {
+            // Разрешаем ближайший доступный шард для чтения/запроса
+            let readable_shard = self.resolve_writable_shard(&shard_id).await.unwrap_or(shard_id.clone());
+            if let Some(client) = multi_client.get_client(&readable_shard) {
                 let request = crate::core::shard_client::ShardRequest {
                     operation: "get_all_vectors".to_string(),
                     collection: Some(collection_name.clone()),
@@ -1275,7 +1393,7 @@ impl ShardCoordinator {
                                         }
                                     }
                                     
-                                    println!("📊 Получено {} векторов с шарда {}", result.len(), shard_id);
+                                    println!("📊 Получено {} векторов с шарда {}", result.len(), readable_shard);
                                     Ok(result)
                                 } else {
                                     Ok(Vec::new())
@@ -1285,15 +1403,15 @@ impl ShardCoordinator {
                             }
                         } else {
                             Err(format!("Ошибка получения векторов с шарда {}: {:?}", 
-                                       shard_id, response.error))
+                                       readable_shard, response.error))
                         }
                     }
                     Err(e) => {
-                        Err(format!("Ошибка связи с шардом {}: {}", shard_id, e))
+                        Err(format!("Ошибка связи с шардом {}: {}", readable_shard, e))
                     }
                 }
             } else {
-                Err(format!("Клиент для шарда {} не найден", shard_id))
+                Err(format!("Клиент для шарда {} не найден", readable_shard))
             }
         } else {
             Err("Клиент для множественных шардов не инициализирован".to_string())
@@ -1307,7 +1425,9 @@ impl ShardCoordinator {
         shard_id: String,
     ) -> Result<u64, String> {
         if let Some(ref multi_client) = self.multi_shard_client {
-            if let Some(client) = multi_client.get_client(&shard_id) {
+            // Разрешаем ближайший доступный шард для чтения/запроса
+            let readable_shard = self.resolve_writable_shard(&shard_id).await.unwrap_or(shard_id.clone());
+            if let Some(client) = multi_client.get_client(&readable_shard) {
                 let request = crate::core::shard_client::ShardRequest {
                     operation: "get_collection_size".to_string(),
                     collection: Some(collection_name),
@@ -1333,15 +1453,15 @@ impl ShardCoordinator {
                             }
                         } else {
                             Err(format!("Ошибка получения размера коллекции с шарда {}: {:?}", 
-                                       shard_id, response.error))
+                                       readable_shard, response.error))
                         }
                     }
                     Err(e) => {
-                        Err(format!("Ошибка связи с шардом {}: {}", shard_id, e))
+                        Err(format!("Ошибка связи с шардом {}: {}", readable_shard, e))
                     }
                 }
             } else {
-                Err(format!("Клиент для шарда {} не найден", shard_id))
+                Err(format!("Клиент для шарда {} не найден", readable_shard))
             }
         } else {
             Err("Клиент для множественных шардов не инициализирован".to_string())
