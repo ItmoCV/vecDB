@@ -347,6 +347,18 @@ impl VectorDB {
         }
     }
 
+    /// Тригерит реконсолидацию данных на указанном шарде (после его восстановления)
+    pub async fn reconcile_shard_data(&self, shard_id: String) -> Result<(), String> {
+        if !self.is_sharded {
+            return Err("База данных не является шардированной".to_string());
+        }
+        if let Some(ref coordinator) = self.shard_coordinator {
+            coordinator.reconcile_shard(shard_id).await
+        } else {
+            Err("Координатор шардов не инициализирован".to_string())
+        }
+    }
+
     /// Выполняет поиск похожих векторов по всем шардам
     pub async fn find_similar_across_shards(
         &self,

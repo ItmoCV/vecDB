@@ -71,6 +71,15 @@ pub struct ShardOperationResult {
 pub struct ShardCoordinator {
     shard_manager: Arc<RwLock<ShardManager>>,
     multi_shard_client: Option<Arc<crate::core::shard_client::MultiShardClient>>,
+    /// Журнал записей, которые должны быть перемещены на восстановленный шард
+    pending_repairs: Arc<RwLock<HashMap<String, Vec<RepairEntry>>>>,
+}
+/// Запись о необходимости миграции данных на целевой шард после его восстановления
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RepairEntry {
+    collection: String,
+    vector_id: u64,
+    from_shard: String,
 }
 
 impl ShardManager {
@@ -366,6 +375,7 @@ impl ShardCoordinator {
         ShardCoordinator {
             shard_manager,
             multi_shard_client: None,
+            pending_repairs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -377,6 +387,7 @@ impl ShardCoordinator {
         ShardCoordinator {
             shard_manager,
             multi_shard_client: Some(multi_shard_client),
+            pending_repairs: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -662,6 +673,13 @@ impl ShardCoordinator {
                                     let mut shard_manager = self.shard_manager.write().await;
                                     let _ = shard_manager.update_shard_usage(&writable_shard_id, vector_size);
                                 }
+
+                                // Если писали не в целевой шард, добавляем задачу на последующую миграцию
+                                if writable_shard_id != shard_id {
+                                    let mut repairs = self.pending_repairs.write().await;
+                                    let entries = repairs.entry(shard_id.clone()).or_insert_with(Vec::new);
+                                    entries.push(RepairEntry { collection: collection_name.clone(), vector_id, from_shard: writable_shard_id.clone() });
+                                }
                                 
                                 Ok(vector_id)
                             } else {
@@ -716,6 +734,13 @@ impl ShardCoordinator {
                                     let mut shard_manager = self.shard_manager.write().await;
                                     let _ = shard_manager.update_shard_usage(&writable_shard_id, vector_size);
                                 }
+
+                                // Если писали не в целевой шард, добавляем задачу на последующую миграцию
+                                if writable_shard_id != shard_id {
+                                    let mut repairs = self.pending_repairs.write().await;
+                                    let entries = repairs.entry(shard_id.clone()).or_insert_with(Vec::new);
+                                    entries.push(RepairEntry { collection: collection_name.clone(), vector_id, from_shard: writable_shard_id.clone() });
+                                }
                                 
                                 Ok(vector_id)
                             } else {
@@ -738,6 +763,127 @@ impl ShardCoordinator {
                 Err(format!("Неизвестный режим шардирования: {}", sharding_mode))
             }
         }
+    }
+
+    /// Запускает консолидацию данных на восстановленный шард: переносит накопленные записи
+    pub async fn reconcile_shard(&self, target_shard: String) -> Result<(), String> {
+        let entries_opt = {
+            let mut repairs = self.pending_repairs.write().await;
+            repairs.remove(&target_shard)
+        };
+
+        if entries_opt.is_none() {
+            return Ok(());
+        }
+
+        let entries = entries_opt.unwrap();
+        println!("🔁 Реконсолидация на шард {}: {} элементов", target_shard, entries.len());
+
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let multi_client = match &self.multi_shard_client {
+            Some(c) => c.clone(),
+            None => return Err("Клиент для множественных шардов не инициализирован".to_string()),
+        };
+
+        // Для надежности еще раз проверим, что целевой шард доступен
+        let resolved_target = self.resolve_writable_shard(&target_shard).await.unwrap_or(target_shard.clone());
+
+        // Убедимся, что нужные коллекции существуют на целевом шарде (создадим при необходимости)
+        {
+            use std::collections::HashSet;
+            let mut collections: HashSet<String> = HashSet::new();
+            for e in &entries { collections.insert(e.collection.clone()); }
+
+            for cname in collections.into_iter() {
+                if let Some(client) = multi_client.get_client(&resolved_target) {
+                    // Проверяем наличие коллекции на целевом шарде через внутренний RPC get_collection
+                    let exists = match {
+                        let req = crate::core::shard_client::ShardRequest {
+                            operation: "get_collection".to_string(),
+                            collection: Some(cname.clone()),
+                            vector_id: None,
+                            embedding: None,
+                            metadata: None,
+                            query: None,
+                            k: None,
+                            filters: None,
+                        };
+                        client.send_request(req).await
+                    } {
+                        Ok(resp) => resp.success,
+                        Err(_) => false,
+                    };
+
+                    if !exists {
+                        // Получаем параметры коллекции из кластера
+                        if let Ok(Some(coll)) = self.get_collection(cname.clone()).await {
+                            let _ = client.create_collection(
+                                cname.clone(),
+                                coll.lsh_metric.clone(),
+                                coll.vector_dimension
+                            ).await;
+                        }
+                    }
+                }
+            }
+        }
+
+        for entry in entries {
+            // 1) Считать вектор с фактического шарда
+            let vector_resp = if let Some(client) = multi_client.get_client(&entry.from_shard) {
+                client.get_vector(entry.collection.clone(), entry.vector_id).await
+            } else {
+                Err(format!("Клиент для шарда {} не найден", entry.from_shard))
+            };
+
+            let mut embedding: Option<Vec<f32>> = None;
+            let mut metadata: HashMap<String, String> = HashMap::new();
+            if let Ok(resp) = vector_resp {
+                if resp.success {
+                    if let Some(data) = resp.data {
+                        if let Some(arr) = data.get("embedding").and_then(|v| v.as_array()) {
+                            embedding = Some(arr.iter().filter_map(|v| v.as_f64().map(|f| f as f32)).collect());
+                        }
+                        if let Some(meta) = data.get("metadata").and_then(|m| m.as_object()) {
+                            metadata = meta.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect();
+                        }
+                    }
+                }
+            }
+
+            // Если не удалось получить данные — пропускаем запись (оставляем на следующую попытку)
+            if embedding.is_none() {
+                // Возвращаем запись обратно в список
+                let mut repairs = self.pending_repairs.write().await;
+                let entries_back = repairs.entry(target_shard.clone()).or_insert_with(Vec::new);
+                entries_back.push(entry.clone());
+                continue;
+            }
+
+            // 2) Добавить вектор на целевой шард (коллекция к этому моменту должна существовать)
+            if let Some(client) = multi_client.get_client(&resolved_target) {
+                let add_res = client.add_vector(entry.collection.clone(), embedding.unwrap(), metadata.clone()).await;
+                match add_res {
+                    Ok(r) if r.success => {
+                        // 3) Удалить вектор со временного шарда
+                        if let Some(src_client) = multi_client.get_client(&entry.from_shard) {
+                            let _ = src_client.delete_vector(entry.collection.clone(), entry.vector_id).await;
+                        }
+                    }
+                    _ => {
+                        // Сбой — вернем запись назад
+                        let mut repairs = self.pending_repairs.write().await;
+                        let entries_back = repairs.entry(target_shard.clone()).or_insert_with(Vec::new);
+                        entries_back.push(entry.clone());
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Обновляет вектор с учетом шардирования
