@@ -332,6 +332,19 @@ impl MultiShardClient {
         let mut failed = 0;
 
         for (shard_id, client) in &self.clients {
+            match client.health_check().await {
+                Ok(true) => {}
+                _ => {
+                    results.push(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some("Шард недоступен".to_string()),
+                        shard_id: shard_id.clone(),
+                    });
+                    failed += 1;
+                    continue;
+                }
+            }
             match operation(client).await {
                 Ok(mut response) => {
                     response.shard_id = shard_id.clone();
@@ -369,6 +382,19 @@ impl MultiShardClient {
         let mut failed = 0;
 
         for (shard_id, client) in &self.clients {
+            match client.health_check().await {
+                Ok(true) => {}
+                _ => {
+                    results.push(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some("Шард недоступен".to_string()),
+                        shard_id: shard_id.clone(),
+                    });
+                    failed += 1;
+                    continue;
+                }
+            }
             match client.create_collection(name.clone(), lsh_metric.clone(), vector_dimension).await {
                 Ok(mut response) => {
                     response.shard_id = shard_id.clone();
@@ -401,6 +427,19 @@ impl MultiShardClient {
         let mut failed = 0;
 
         for (shard_id, client) in &self.clients {
+            match client.health_check().await {
+                Ok(true) => {}
+                _ => {
+                    results.push(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some("Шард недоступен".to_string()),
+                        shard_id: shard_id.clone(),
+                    });
+                    failed += 1;
+                    continue;
+                }
+            }
             match client.delete_collection(name.clone()).await {
                 Ok(mut response) => {
                     response.shard_id = shard_id.clone();
@@ -435,6 +474,12 @@ impl MultiShardClient {
         metadata: HashMap<String, String>,
     ) -> Result<ShardResponse, String> {
         if let Some(client) = self.clients.get(shard_id) {
+            match client.health_check().await {
+                Ok(true) => {}
+                _ => {
+                    return Err(format!("Шард {} недоступен", shard_id));
+                }
+            }
             client.add_vector(collection_name, embedding, metadata).await
         } else {
             Err(format!("Шард {} не найден", shard_id))
@@ -469,6 +514,10 @@ impl MultiShardClient {
         let mut all_results = Vec::new();
 
         for (shard_id, client) in &self.clients {
+            match client.health_check().await {
+                Ok(true) => {}
+                _ => { continue; }
+            }
             match client.find_similar(collection.clone(), query.clone(), k).await {
                 Ok(response) => {
                     if response.success {
@@ -547,6 +596,19 @@ impl MultiShardClient {
         let mut failed = 0;
 
         for (shard_id, client) in &self.clients {
+            match client.health_check().await {
+                Ok(true) => {}
+                _ => {
+                    results.push(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some("Шард недоступен".to_string()),
+                        shard_id: shard_id.clone(),
+                    });
+                    failed += 1;
+                    continue;
+                }
+            }
             match client.stop_shard().await {
                 Ok(mut response) => {
                     response.shard_id = shard_id.clone();
@@ -579,6 +641,19 @@ impl MultiShardClient {
         let mut failed = 0;
 
         for (shard_id, client) in &self.clients {
+            match client.health_check().await {
+                Ok(true) => {}
+                _ => {
+                    results.push(ShardResponse {
+                        success: false,
+                        data: None,
+                        error: Some("Шард недоступен".to_string()),
+                        shard_id: shard_id.clone(),
+                    });
+                    failed += 1;
+                    continue;
+                }
+            }
             let request = ShardRequest {
                 operation: "dump".to_string(),
                 collection: None,
