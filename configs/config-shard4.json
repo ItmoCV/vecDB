@@ -1,0 +1,11 @@
+{
+    "storage": {
+        "path": "/app"
+    },
+    "server": {
+        "host": "0.0.0.0",
+        "port": 8084,
+        "description": "Shard Node 4",
+        "role": "shard"
+    }
+}

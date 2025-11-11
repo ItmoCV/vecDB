@@ -171,4 +171,12 @@ impl ConfigLoader {
             .unwrap_or(false)
     }
 
+    /// Получает коэффициент репликации из конфигурации
+    pub fn get_replication_factor(&self) -> u8 {
+        let sharding_config = self.get("sharding");
+        sharding_config.get("replication_factor")
+            .and_then(|v| v.parse::<u8>().ok())
+            .unwrap_or(2) // По умолчанию 2 реплики
+    }
+
 }

@@ -634,6 +634,67 @@ impl MultiShardClient {
         }
     }
 
+    /// Добавляет вектор на несколько шардов (для репликации)
+    pub async fn add_vector_on_shards(
+        &self,
+        shard_ids: &[String],
+        collection_name: String,
+        embedding: Vec<f32>,
+        metadata: HashMap<String, String>,
+    ) -> MultiShardResult {
+        let mut results = Vec::new();
+        let mut successful = 0;
+        let mut failed = 0;
+
+        for shard_id in shard_ids {
+            if let Some(client) = self.clients.get(shard_id) {
+                match client.health_check().await {
+                    Ok(true) => {}
+                    _ => {
+                        results.push(ShardResponse {
+                            success: false,
+                            data: None,
+                            error: Some("Шард недоступен".to_string()),
+                            shard_id: shard_id.clone(),
+                        });
+                        failed += 1;
+                        continue;
+                    }
+                }
+                match client.add_vector(collection_name.clone(), embedding.clone(), metadata.clone()).await {
+                    Ok(mut response) => {
+                        response.shard_id = shard_id.clone();
+                        results.push(response);
+                        successful += 1;
+                    }
+                    Err(error) => {
+                        results.push(ShardResponse {
+                            success: false,
+                            data: None,
+                            error: Some(error),
+                            shard_id: shard_id.clone(),
+                        });
+                        failed += 1;
+                    }
+                }
+            } else {
+                results.push(ShardResponse {
+                    success: false,
+                    data: None,
+                    error: Some(format!("Шард {} не найден", shard_id)),
+                    shard_id: shard_id.clone(),
+                });
+                failed += 1;
+            }
+        }
+
+        MultiShardResult {
+            results,
+            successful_operations: successful,
+            failed_operations: failed,
+        }
+    }
+
     /// Выполняет dump на всех шардах
     pub async fn dump_all_shards(&self) -> MultiShardResult {
         let mut results = Vec::new();

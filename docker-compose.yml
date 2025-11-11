@@ -77,6 +77,58 @@ services:
       retries: 3
       start_period: 40s
 
+  # Шард 3
+  vecdb-shard3:
+    build: .
+    container_name: vecdb-shard3
+    hostname: shard3
+    ports:
+      - "8083:8083"
+    volumes:
+      - ./shard3_data:/app/storage
+      - ./configs/config-shard3.json:/app/config.json:ro
+    user: "1000:1000"
+    environment:
+      - RUST_LOG=info
+      - HOSTNAME=shard3
+      - AWS_DEFAULT_REGION=us-east-1
+    networks:
+      - vecdb-cluster
+    restart: "no"
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Шард 4
+  vecdb-shard4:
+    build: .
+    container_name: vecdb-shard4
+    hostname: shard4
+    ports:
+      - "8084:8084"
+    volumes:
+      - ./shard4_data:/app/storage
+      - ./configs/config-shard4.json:/app/config.json:ro
+    user: "1000:1000"
+    environment:
+      - RUST_LOG=info
+      - HOSTNAME=shard4
+      - AWS_DEFAULT_REGION=us-east-1
+    networks:
+      - vecdb-cluster
+    restart: "no"
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   # Мониторинг кластера
   cluster-monitor:
     image: nginx:alpine
@@ -91,6 +143,8 @@ services:
       - vecdb-coordinator
       - vecdb-shard1
       - vecdb-shard2
+      - vecdb-shard3
+      - vecdb-shard4
     restart: "no"
 
 networks:

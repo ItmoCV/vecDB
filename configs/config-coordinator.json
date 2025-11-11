@@ -11,6 +11,7 @@
     "sharding": {
         "enabled": true,
         "strategy": "lsh_based",
+        "replication_factor": 2,
         "shards": [
             {
                 "id": "shard1",
@@ -23,6 +24,18 @@
                 "host": "vecdb-shard2",
                 "port": 8082,
                 "description": "Второй шард кластера"
+            },
+            {
+                "id": "shard3",
+                "host": "vecdb-shard3",
+                "port": 8083,
+                "description": "Третий шард кластера"
+            },
+            {
+                "id": "shard4",
+                "host": "vecdb-shard4",
+                "port": 8084,
+                "description": "Четвертый шард кластера"
             }
         ]
     }

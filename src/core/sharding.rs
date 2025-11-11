@@ -84,7 +84,7 @@ struct RepairEntry {
 
 impl ShardManager {
     /// Создает новый менеджер шардов
-    pub fn new(configs: Vec<ShardConfig>, strategy: RoutingStrategy) -> Self {
+    pub fn new(configs: Vec<ShardConfig>, strategy: RoutingStrategy, replication_factor: u8) -> Self {
         let mut shards = HashMap::new();
         
         for config in configs {
@@ -104,7 +104,7 @@ impl ShardManager {
         ShardManager {
             shards,
             routing_strategy: strategy,
-            replication_factor: 2, // По умолчанию
+            replication_factor,
         }
     }
 
@@ -223,13 +223,20 @@ impl ShardManager {
     }
 
     /// Получает следующий доступный шард (для репликации)
+    /// Использует детерминированный выбор на основе отсортированного списка шардов
     fn get_next_available_shard(&self, exclude: &[String]) -> Option<String> {
-        for (shard_id, shard) in &self.shards {
-            if !exclude.contains(shard_id) && shard.info.status == ShardStatus::Active {
-                return Some(shard_id.clone());
-            }
-        }
-        None
+        // Создаем отсортированный список для детерминированного выбора
+        let mut available_shards: Vec<String> = self.shards.iter()
+            .filter(|(shard_id, shard)| {
+                !exclude.contains(shard_id) && shard.info.status == ShardStatus::Active
+            })
+            .map(|(shard_id, _)| shard_id.clone())
+            .collect();
+        
+        available_shards.sort();
+        
+        // Возвращаем первый доступный шард
+        available_shards.first().cloned()
     }
 
     /// Получает информацию о шарде
@@ -648,52 +655,88 @@ impl ShardCoordinator {
         match sharding_mode {
             "CollectionBased" => {
                 // Collection-based: роутинг по имени коллекции (HashBased или RangeBased)
-                let shard_id = {
+                let primary_shard_id = {
                     let shard_manager = self.shard_manager.read().await;
                     shard_manager.get_shard_for_collection(&collection_name)?
                 };
 
-                // Проверяем доступность и при необходимости выбираем ближайший доступный
-                let writable_shard_id = self.resolve_writable_shard(&shard_id).await?;
-
-                println!("🎯 Collection-based: вектор в коллекции '{}' -> шард '{}' (целевой='{}')",
-                         collection_name, writable_shard_id, shard_id);
-
-                if let Some(ref multi_client) = self.multi_shard_client {
-                    match multi_client.add_vector_on_shard(&writable_shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
-                        Ok(response) => {
-                            if response.success {
-                                let vector_id = response.data
-                                    .and_then(|data| data.get("id").and_then(|v| v.as_u64()))
-                                    .unwrap_or(0);
-                                println!("📡 Вектор добавлен на шард {} (collection-based): ID={}", writable_shard_id, vector_id);
-                                
-                                // Обновляем использование пространства на шарде
-                                {
-                                    let mut shard_manager = self.shard_manager.write().await;
-                                    let _ = shard_manager.update_shard_usage(&writable_shard_id, vector_size);
-                                }
-
-                                // Если писали не в целевой шард, добавляем задачу на последующую миграцию
-                                if writable_shard_id != shard_id {
-                                    let mut repairs = self.pending_repairs.write().await;
-                                    let entries = repairs.entry(shard_id.clone()).or_insert_with(Vec::new);
-                                    entries.push(RepairEntry { collection: collection_name.clone(), vector_id, from_shard: writable_shard_id.clone() });
-                                }
-                                
-                                Ok(vector_id)
-                            } else {
-                                if let Some(error) = response.error {
-                                    Err(format!("Ошибка добавления вектора на шард {}: {}", writable_shard_id, error))
-                                } else {
-                                    Err("Неизвестная ошибка добавления вектора".to_string())
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            Err(format!("Ошибка связи с шардом {}: {}", writable_shard_id, e))
+                // Получаем список шардов для репликации
+                let shard_ids_for_replication = {
+                    let shard_manager = self.shard_manager.read().await;
+                    let mut shards = vec![primary_shard_id.clone()];
+                    
+                    // Добавляем реплики
+                    for _ in 1..shard_manager.replication_factor {
+                        if let Some(replica_shard) = shard_manager.get_next_available_shard(&shards) {
+                            shards.push(replica_shard);
                         }
                     }
+                    shards
+                };
+
+                // Проверяем доступность и выбираем доступные шарды
+                let mut writable_shard_ids = Vec::new();
+                for shard_id in &shard_ids_for_replication {
+                    if let Ok(writable) = self.resolve_writable_shard(shard_id).await {
+                        writable_shard_ids.push(writable);
+                    }
+                }
+
+                if writable_shard_ids.is_empty() {
+                    return Err("Нет доступных шардов для записи".to_string());
+                }
+
+                println!("🎯 Collection-based: вектор в коллекции '{}' -> шарды {:?} (основной='{}')",
+                         collection_name, writable_shard_ids, primary_shard_id);
+
+                if let Some(ref multi_client) = self.multi_shard_client {
+                    // Записываем на все реплики
+                    let replication_result = multi_client.add_vector_on_shards(
+                        &writable_shard_ids,
+                        collection_name.clone(),
+                        embedding.clone(),
+                        metadata.clone()
+                    ).await;
+
+                    // Проверяем, что хотя бы одна запись успешна
+                    if replication_result.successful_operations == 0 {
+                        return Err("Не удалось записать вектор ни на один шард".to_string());
+                    }
+
+                    // Получаем vector_id из первого успешного ответа
+                    let vector_id = replication_result.results.iter()
+                        .find(|r| r.success)
+                        .and_then(|r| r.data.as_ref())
+                        .and_then(|data| data.get("id"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+
+                    println!("📡 Вектор добавлен на {} шардов (collection-based): ID={}, успешно: {}/{}", 
+                             writable_shard_ids.len(), vector_id, 
+                             replication_result.successful_operations, replication_result.results.len());
+                    
+                    // Обновляем использование пространства на всех шардах, где запись успешна
+                    {
+                        let mut shard_manager = self.shard_manager.write().await;
+                        for response in &replication_result.results {
+                            if response.success {
+                                let _ = shard_manager.update_shard_usage(&response.shard_id, vector_size);
+                            }
+                        }
+                    }
+
+                    // Если основной шард недоступен, добавляем задачу на последующую миграцию
+                    if !writable_shard_ids.contains(&primary_shard_id) {
+                        let mut repairs = self.pending_repairs.write().await;
+                        let entries = repairs.entry(primary_shard_id.clone()).or_insert_with(Vec::new);
+                        entries.push(RepairEntry { 
+                            collection: collection_name.clone(), 
+                            vector_id, 
+                            from_shard: writable_shard_ids[0].clone() 
+                        });
+                    }
+                    
+                    Ok(vector_id)
                 } else {
                     Err("Клиент для множественных шардов не инициализирован".to_string())
                 }
@@ -709,52 +752,79 @@ impl ShardCoordinator {
                     Some(42) // seed для воспроизводимости
                 );
                 
-                let shard_id = {
+                // Получаем список шардов для репликации на основе bucket_id
+                let bucket_id = temp_lsh.hash(&embedding);
+
+                let shard_ids_for_replication = {
                     let shard_manager = self.shard_manager.read().await;
-                    shard_manager.get_shard_for_vector(&embedding, &temp_lsh)?
+                    shard_manager.get_shards_for_bucket(bucket_id)?
                 };
 
-                // Проверяем доступность и при необходимости выбираем ближайший доступный
-                let writable_shard_id = self.resolve_writable_shard(&shard_id).await?;
+                // Проверяем доступность и выбираем доступные шарды
+                let mut writable_shard_ids = Vec::new();
+                for shard_id in &shard_ids_for_replication {
+                    if let Ok(writable) = self.resolve_writable_shard(shard_id).await {
+                        writable_shard_ids.push(writable);
+                    }
+                }
 
-                println!("🎯 Bucket-based: collection='{}', embedding_len={}, шард='{}' (целевой='{}')", 
-                         collection_name, embedding.len(), writable_shard_id, shard_id);
+                if writable_shard_ids.is_empty() {
+                    return Err("Нет доступных шардов для записи".to_string());
+                }
+
+                let primary_shard_id = shard_ids_for_replication[0].clone();
+
+                println!("🎯 Bucket-based: collection='{}', embedding_len={}, bucket_id={}, шарды {:?} (основной='{}')", 
+                         collection_name, embedding.len(), bucket_id, writable_shard_ids, primary_shard_id);
 
                 if let Some(ref multi_client) = self.multi_shard_client {
-                    match multi_client.add_vector_on_shard(&writable_shard_id, collection_name.clone(), embedding.clone(), metadata.clone()).await {
-                        Ok(response) => {
-                            if response.success {
-                                let vector_id = response.data
-                                    .and_then(|data| data.get("id").and_then(|v| v.as_u64()))
-                                    .unwrap_or(0);
-                                println!("📡 Вектор добавлен на шард {} (bucket-based): ID={}", writable_shard_id, vector_id);
-                                
-                                // Обновляем использование пространства на шарде
-                                {
-                                    let mut shard_manager = self.shard_manager.write().await;
-                                    let _ = shard_manager.update_shard_usage(&writable_shard_id, vector_size);
-                                }
+                    // Записываем на все реплики
+                    let replication_result = multi_client.add_vector_on_shards(
+                        &writable_shard_ids,
+                        collection_name.clone(),
+                        embedding.clone(),
+                        metadata.clone()
+                    ).await;
 
-                                // Если писали не в целевой шард, добавляем задачу на последующую миграцию
-                                if writable_shard_id != shard_id {
-                                    let mut repairs = self.pending_repairs.write().await;
-                                    let entries = repairs.entry(shard_id.clone()).or_insert_with(Vec::new);
-                                    entries.push(RepairEntry { collection: collection_name.clone(), vector_id, from_shard: writable_shard_id.clone() });
-                                }
-                                
-                                Ok(vector_id)
-                            } else {
-                                if let Some(error) = response.error {
-                                    Err(format!("Ошибка добавления вектора на шард {}: {}", writable_shard_id, error))
-                                } else {
-                                    Err("Неизвестная ошибка добавления вектора".to_string())
-                                }
+                    // Проверяем, что хотя бы одна запись успешна
+                    if replication_result.successful_operations == 0 {
+                        return Err("Не удалось записать вектор ни на один шард".to_string());
+                    }
+
+                    // Получаем vector_id из первого успешного ответа
+                    let vector_id = replication_result.results.iter()
+                        .find(|r| r.success)
+                        .and_then(|r| r.data.as_ref())
+                        .and_then(|data| data.get("id"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+
+                    println!("📡 Вектор добавлен на {} шардов (bucket-based): ID={}, успешно: {}/{}", 
+                             writable_shard_ids.len(), vector_id,
+                             replication_result.successful_operations, replication_result.results.len());
+                    
+                    // Обновляем использование пространства на всех шардах, где запись успешна
+                    {
+                        let mut shard_manager = self.shard_manager.write().await;
+                        for response in &replication_result.results {
+                            if response.success {
+                                let _ = shard_manager.update_shard_usage(&response.shard_id, vector_size);
                             }
                         }
-                        Err(e) => {
-                            Err(format!("Ошибка связи с шардом {}: {}", writable_shard_id, e))
-                        }
                     }
+
+                    // Если основной шард недоступен, добавляем задачу на последующую миграцию
+                    if !writable_shard_ids.contains(&primary_shard_id) {
+                        let mut repairs = self.pending_repairs.write().await;
+                        let entries = repairs.entry(primary_shard_id.clone()).or_insert_with(Vec::new);
+                        entries.push(RepairEntry { 
+                            collection: collection_name.clone(), 
+                            vector_id, 
+                            from_shard: writable_shard_ids[0].clone() 
+                        });
+                    }
+                    
+                    Ok(vector_id)
                 } else {
                     Err("Клиент для множественных шардов не инициализирован".to_string())
                 }
